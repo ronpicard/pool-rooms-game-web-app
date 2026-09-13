@@ -30,7 +30,7 @@ test('Rain Hall ceiling lights leave clearance around every waterfall head', asy
   expect(clearance.minimum).toBeGreaterThan(1.5);
   await page.locator('#btn-start').click();
   await page.evaluate(() => { PR.game.player.teleport(118,0,14,-0.7); PR.game.player.pitch=1.05; });
-  await expect.poll(() => page.evaluate(() => Math.abs(PR.game.scene.fog.far-95*0.78)), {timeout:10000}).toBeLessThan(0.7);
+  await expect.poll(() => page.evaluate(() => Math.abs(PR.game.scene.fog.far-95*0.78))).toBeLessThan(0.7);
   await page.screenshot({path:testInfo.outputPath('rain-ceiling.png')});
 });
 
@@ -138,6 +138,7 @@ test('room arrivals fade away and the pause menu remembers the current place', a
 });
 
 test('ocean waves stay visible and animate on every quality setting', async ({ page }, testInfo) => {
+  test.slow(); // Three quality levels each compile and render the ocean on the CPU in CI.
   const errors=[];
   page.on('pageerror',e=>errors.push(e.message));
   page.on('console',m=>{if(m.type()==='error') errors.push(m.text());});
@@ -148,7 +149,7 @@ test('ocean waves stay visible and animate on every quality setting', async ({ p
   await page.locator('#btn-start').click();
   await page.evaluate(() => { PR.game.player.teleport(470,7,9,0); PR.game.player.pitch=-0.25; });
   await expect.poll(() => page.evaluate(() => PR.game.camera.far)).toBeGreaterThanOrEqual(1000);
-  await expect.poll(() => page.evaluate(() => Math.abs(PR.game.scene.fog.far-95*1.15)), {timeout:10000}).toBeLessThan(0.7);
+  await expect.poll(() => page.evaluate(() => Math.abs(PR.game.scene.fog.far-95*1.15))).toBeLessThan(0.7);
   await page.screenshot({path:testInfo.outputPath('ocean.png')});
   await page.locator('#btn-pause').click();
   for (const quality of ['low','medium','high']) {
@@ -261,7 +262,7 @@ test('room lighting settles gradually and restarting restores the Pavilion atmos
   await page.locator('#btn-start').click();
   const initial = await page.evaluate(() => PR.game.scene.fog.far);
   await page.evaluate(() => PR.game.player.teleport(240, 0, 12, -Math.PI / 2));
-  await expect.poll(() => page.evaluate(() => PR.game.scene.fog.far), { timeout: 10000 }).toBeLessThan(initial * 0.8);
+  await expect.poll(() => page.evaluate(() => PR.game.scene.fog.far)).toBeLessThan(initial * 0.8);
   await page.locator('#btn-pause').click();
   await page.locator('#btn-new-seed').click();
   await expect.poll(() => page.evaluate(() => PR.game.scene.fog.far)).toBeCloseTo(initial, 1);
@@ -332,8 +333,11 @@ test('desktop movement and pause when pointer lock is refused', async ({ page })
   });
   await page.goto('/#seed=desktop-test');
   await expect.poll(() => page.evaluate(() => !!window.PR?.game?.world)).toBe(true);
-  await page.locator('#btn-start').click();
-  await expect(page.locator('#toast')).toContainText('capture the mouse');
+  // Observe the transient hint while clicking; a slow rendered frame can delay click completion.
+  await Promise.all([
+    expect(page.locator('#toast')).toContainText('capture the mouse'),
+    page.locator('#btn-start').click(),
+  ]);
   const before = await page.evaluate(() => window.PR.game.player.position.toArray());
   await page.keyboard.down('w');
   await expect.poll(async () => page.evaluate(before => window.PR.game.player.position.distanceTo({ x: before[0], y: before[1], z: before[2] }), before)).toBeGreaterThan(0.1);
@@ -667,7 +671,7 @@ for (const [name,x,z,yaw] of [['arcade',51,21,-1.15],['rain',111,12,-1.57],['rai
     await expect.poll(()=>page.evaluate(x=>Math.abs(PR.game.camera.position.x-x),x)).toBeLessThan(1);
     // Capture the destination's settled lighting instead of the previous room's first frame.
     const haze = { arcade: 0.88, rain: 0.78, 'rain-slide': 0.78, baths: 0.84, columns: 0.72, sky: 1.15, 'sunset-slide': 1.15, gallery: 0.9, lanterns: 0.88, pier: 1.15 }[name];
-    await expect.poll(() => page.evaluate(target => Math.abs(PR.game.scene.fog.far - target), 95 * haze), { timeout: 10000 }).toBeLessThan(0.7);
+    await expect.poll(() => page.evaluate(target => Math.abs(PR.game.scene.fog.far - target), 95 * haze)).toBeLessThan(0.7);
     await page.screenshot({path:testInfo.outputPath(`${name}.png`)});
     const stats=await page.evaluate(()=>({calls:PR.game.renderer.info.render.calls,triangles:PR.game.renderer.info.render.triangles}));
     expect(stats.calls,name).toBeLessThan(180);

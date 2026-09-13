@@ -125,6 +125,7 @@ test('footsteps remain audible with environment off and the movement slider sile
 });
 
 test('water entry has bounded bubbles, reduced motion disables them, and tile shaders render', async ({ page }, testInfo) => {
+  test.slow(); // Allow shader compilation and screenshots at all three quality levels in CI.
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
