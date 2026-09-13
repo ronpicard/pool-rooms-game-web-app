@@ -869,7 +869,8 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
       if (!world || !player) return;
       renderer.info.reset();
 
-      const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
+      const elapsed = Math.max(0, (now - last) / 1000);
+      const dt = Math.min(0.1, elapsed);
       last = now;
       time += dt;
       fpsFrames++;
@@ -895,7 +896,8 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
 
       const pos = player.position;
       const roomName = world.journey.roomAt(pos.x,pos.z)?.name;
-      roomHaze = atmosphere.update(roomName, dt);
+      // Lighting follows real elapsed time when slow frames exceed the bounded physics timestep.
+      roomHaze = atmosphere.update(roomName, elapsed);
       applyFog();
       world.update(pos.x, pos.z, 2);
       if (resting) {

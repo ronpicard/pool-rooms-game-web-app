@@ -8,6 +8,7 @@ Built with React, Vite and Three.js. All textures and audio are generated locall
 
 ## Latest changes
 
+- Room lighting now settles at a consistent pace on slower devices while movement keeps its bounded physics timestep.
 - Look freely with the mouse or touch controls throughout all three slide rides.
 - Smoothed the camera over ascending and descending steps while retaining solid treads, responsive jumps and normal swimming.
 - Rain Hall droplets now accelerate toward the water and meet small splash beads and fading rings beneath the actual shower heads. Added gentle drifting steam over the Sunken Baths and Lantern Baths.

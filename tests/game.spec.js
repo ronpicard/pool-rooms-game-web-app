@@ -255,6 +255,29 @@ test('moving through water leaves bounded ripples at the pool surface', async ({
   expect(errors).toEqual([]);
 });
 
+test('room lighting follows elapsed time even when rendering frames are slow', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('poolrooms.settings', JSON.stringify({ quality: 'low', inputMode: 'touch' }));
+    const requestFrame = window.requestAnimationFrame.bind(window);
+    window.lightingFrames = { count: 0, capture: 0, fog: null };
+    window.requestAnimationFrame = callback => requestFrame(now => {
+      const frame = ++window.lightingFrames.count;
+      // Each rendered frame represents at least half a second of elapsed time.
+      callback(now + frame * 500);
+      if (frame === window.lightingFrames.capture) window.lightingFrames.fog = PR.game.scene.fog.far;
+    });
+  });
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => !!window.PR?.game?.world)).toBe(true);
+  await page.locator('#btn-start').click();
+  await page.evaluate(() => {
+    PR.game.player.teleport(240, 0, 12, -Math.PI / 2);
+    window.lightingFrames.capture = window.lightingFrames.count + 5;
+  });
+  await expect.poll(() => page.evaluate(() => window.lightingFrames.fog)).not.toBeNull();
+  expect(await page.evaluate(() => window.lightingFrames.fog)).toBeLessThan(76);
+});
+
 test('room lighting settles gradually and restarting restores the Pavilion atmosphere', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('poolrooms.settings', JSON.stringify({ quality: 'low', inputMode: 'touch' })));
   await page.goto('/');

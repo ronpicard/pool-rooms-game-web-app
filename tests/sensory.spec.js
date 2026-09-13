@@ -22,22 +22,46 @@ async function measureAudio(page) {
     const connect = AudioNode.prototype.connect;
     AudioNode.prototype.connect = function(destination, ...args) {
       if (destination === this.context.destination && !window.soundMeter) {
-        const splitter = this.context.createChannelSplitter(2);
-        const meters = [this.context.createAnalyser(), this.context.createAnalyser()];
-        connect.call(this, splitter);
-        meters.forEach((meter, index) => { meter.fftSize = 4096; connect.call(splitter, meter, index); });
-        window.soundMeter = {
-          context: this.context,
-          async read() {
-            const totals = [0,0], buffer = new Float32Array(4096);
-            for (let sample=0; sample<12; sample++) {
-              await new Promise(resolve => setTimeout(resolve, 25));
-              meters.forEach((meter, index) => {
-                meter.getFloatTimeDomainData(buffer);
-                totals[index] += buffer.reduce((sum,value) => sum+value*value,0)/buffer.length;
-              });
+        const context = this.context, source = this;
+        // Capture every audio quantum, including short footsteps while WebGL blocks the page thread.
+        const url = URL.createObjectURL(new Blob([`
+          class OutputMeter extends AudioWorkletProcessor {
+            constructor() {
+              super(); this.energy = [0, 0]; this.samples = [0, 0];
+              this.port.onmessage = ({ data }) => {
+                if (data.type === 'start') { this.energy = [0, 0]; this.samples = [0, 0]; }
+                this.port.postMessage({ id: data.id, levels: this.energy.map((sum, i) => Math.sqrt(sum / Math.max(1, this.samples[i]))) });
+              };
             }
-            return totals.map(total => Math.sqrt(total/12));
+            process(inputs) {
+              for (let channel = 0; channel < 2; channel++) {
+                const samples = inputs[0][channel];
+                if (!samples) continue;
+                for (const value of samples) this.energy[channel] += value * value;
+                this.samples[channel] += samples.length;
+              }
+              return true;
+            }
+          }
+          registerProcessor('output-meter', OutputMeter);
+        `], { type: 'text/javascript' }));
+        const ready = context.audioWorklet.addModule(url).then(() => {
+          const meter = new AudioWorkletNode(context, 'output-meter', { channelCount: 2, channelCountMode: 'explicit', outputChannelCount: [2] });
+          connect.call(source, meter);
+          connect.call(meter, context.destination); // The worklet emits silence; the original speaker route stays intact.
+          const pending = new Map(); let nextId = 0;
+          meter.port.onmessage = ({ data }) => { pending.get(data.id)?.(data.levels); pending.delete(data.id); };
+          return type => new Promise(resolve => {
+            const id = ++nextId; pending.set(id, resolve); meter.port.postMessage({ type, id });
+          });
+        }).finally(() => URL.revokeObjectURL(url));
+        window.soundMeter = {
+          context,
+          async read() {
+            const request = await ready;
+            await request('start');
+            await new Promise(resolve => setTimeout(resolve, 300));
+            return request('read');
           },
         };
       }
@@ -113,14 +137,19 @@ test('waterfall sources follow the architecture and walls muffle sound while doo
 test('footsteps remain audible with environment off and the movement slider silences them', async ({ page }) => {
   await measureAudio(page);
   await start(page, { environmentVolume: 0, movementVolume: 1, musicVolume: 0 });
+  await expect.poll(() => page.evaluate(() => soundMeter.context.state)).toBe('running');
+  await page.evaluate(() => soundMeter.read());
   await page.evaluate(() => {
     PR.game.player.teleport(51,0,21,0); PR.game.input.state.moveZ=1;
   });
+  await expect.poll(() => page.evaluate(() => PR.game.player.position.z)).toBeLessThan(20);
   await expect.poll(async () => Math.max(...await page.evaluate(() => soundMeter.read()))).toBeGreaterThan(0.001);
   await page.locator('#btn-pause').click();
   await slider(page, '#rng-movementVolume', 0);
   await page.locator('#btn-resume').click();
+  await expect.poll(() => page.evaluate(() => soundMeter.context.state)).toBe('running');
   await page.evaluate(() => { PR.game.player.teleport(51,0,21,0); PR.game.input.state.moveZ=1; });
+  await expect.poll(() => page.evaluate(() => PR.game.player.position.z)).toBeLessThan(20);
   await expect.poll(async () => Math.max(...await page.evaluate(() => soundMeter.read()))).toBeLessThan(0.00001);
 });
 
