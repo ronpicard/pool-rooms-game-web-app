@@ -247,7 +247,7 @@ test('the designed walk connects every room and all pools have usable steps', as
   expect(route.drains).toBe(0);
 });
 
-test('resting ends the journey, pauses safely, and allows exploration to continue', async ({ page }) => {
+test('resting ends the journey, pauses safely, and allows exploration to continue', async ({ page }, testInfo) => {
   await page.addInitScript(() => localStorage.setItem('poolrooms.settings', JSON.stringify({quality:'low',inputMode:'touch'})));
   await page.goto('/poolrooms/');
   await expect.poll(() => page.evaluate(() => !!PR.game?.world)).toBe(true);
@@ -259,6 +259,9 @@ test('resting ends the journey, pauses safely, and allows exploration to continu
   await expect(page.locator('#btn-rest')).toBeVisible();
   await page.locator('#btn-rest').click();
   await expect(page.locator('#ending')).toBeVisible();
+  await expect(page.locator('.ending-titles')).toHaveCSS('opacity','1',{timeout:10000});
+  await page.screenshot({path:testInfo.outputPath('ending.png')});
+  expect(await page.evaluate(()=>PR.game.camera.getWorldDirection(PR.game.player.velocity.clone()).x)).toBeGreaterThan(0.99);
   await expect(page.locator('#touch-layer')).toBeHidden();
   await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem('poolrooms.completed')))).toBe(true);
   await page.locator('#btn-pause').click();
@@ -275,35 +278,27 @@ test('resting ends the journey, pauses safely, and allows exploration to continu
   expect(await page.evaluate(()=>PR.game.player.position.x)).toBeLessThan(48);
 });
 
-test('new rooms render within the low-quality draw budget', async ({ page }, testInfo) => {
-  const errors=[];
-  page.on('pageerror',e=>errors.push(e.message));
-  page.on('console',m=>{if(m.type()==='error') errors.push(m.text());});
-  await page.setViewportSize({width:1280,height:800});
-  await page.addInitScript(()=>localStorage.setItem('poolrooms.settings',JSON.stringify({quality:'low',inputMode:'touch'})));
-  await page.goto('/poolrooms/');
-  await expect.poll(()=>page.evaluate(()=>!!PR.game?.world)).toBe(true);
-  await page.locator('#btn-start').click();
-  const metrics=[];
-  for (const [name,x,z,yaw] of [['arcade',51,21,-1.15],['rain',111,12,-1.57],['baths',180,28,-1.2],['columns',240,12,-1.57],['sky',340,12,-1.3]]) {
+// Independent views keep screenshot work bounded on GitHub's software renderer.
+for (const [name,x,z,yaw] of [['arcade',51,21,-1.15],['rain',111,12,-1.57],['baths',180,28,-1.2],['columns',240,12,-1.57],['sky',340,12,-1.3]]) {
+  test(`${name} renders within the low-quality draw budget`, async ({ page }, testInfo) => {
+    const errors=[];
+    page.on('pageerror',e=>errors.push(e.message));
+    page.on('console',m=>{if(m.type()==='error') errors.push(m.text());});
+    await page.setViewportSize({width:1280,height:800});
+    await page.addInitScript(()=>localStorage.setItem('poolrooms.settings',JSON.stringify({quality:'low',inputMode:'touch'})));
+    await page.goto('/poolrooms/');
+    await expect.poll(()=>page.evaluate(()=>!!PR.game?.world)).toBe(true);
+    await page.locator('#btn-start').click();
     await page.evaluate(({x,z,yaw})=>PR.game.player.teleport(x,PR.game.world.floorAt(x,z),z,yaw),{x,z,yaw});
     await expect.poll(()=>page.evaluate(x=>Math.abs(PR.game.camera.position.x-x),x)).toBeLessThan(1);
     await page.screenshot({path:testInfo.outputPath(`${name}.png`)});
     const stats=await page.evaluate(()=>({calls:PR.game.renderer.info.render.calls,triangles:PR.game.renderer.info.render.triangles}));
-    metrics.push({name,...stats});
     expect(stats.calls,name).toBeLessThan(180);
     expect(stats.triangles,name).toBeLessThan(250000);
-  }
-  await page.evaluate(()=>PR.game.player.teleport(410.3,7,32,-Math.PI/2));
-  await expect(page.locator('#btn-rest')).toBeVisible();
-  await page.locator('#btn-rest').click();
-  await expect(page.locator('.ending-titles')).toHaveCSS('opacity','1',{timeout:10000});
-  await page.screenshot({path:testInfo.outputPath('ending.png')});
-  expect(await page.evaluate(()=>PR.game.camera.getWorldDirection(PR.game.player.velocity.clone()).x)).toBeGreaterThan(0.99);
-  console.log('Low-quality render budget:', JSON.stringify(metrics));
-  await testInfo.attach('render-budget',{body:JSON.stringify(metrics,null,2),contentType:'application/json'});
-  expect(errors).toEqual([]);
-});
+    await testInfo.attach('render-budget',{body:JSON.stringify({name,...stats},null,2),contentType:'application/json'});
+    expect(errors).toEqual([]);
+  });
+}
 
 
 test('a continuous walk reaches the Sky Pool without teleporting between rooms', async ({page}) => {
