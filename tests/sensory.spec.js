@@ -57,11 +57,18 @@ async function measureAudio(page) {
         }).finally(() => URL.revokeObjectURL(url));
         window.soundMeter = {
           context,
-          async read() {
+          async begin() {
             const request = await ready;
             await request('start');
-            await new Promise(resolve => setTimeout(resolve, 300));
+          },
+          async end() {
+            const request = await ready;
             return request('read');
+          },
+          async read() {
+            await this.begin();
+            await new Promise(resolve => setTimeout(resolve, 300));
+            return this.end();
           },
         };
       }
@@ -139,18 +146,22 @@ test('footsteps remain audible with environment off and the movement slider sile
   await start(page, { environmentVolume: 0, movementVolume: 1, musicVolume: 0 });
   await expect.poll(() => page.evaluate(() => soundMeter.context.state)).toBe('running');
   await page.evaluate(() => soundMeter.read());
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
+    await soundMeter.begin();
     PR.game.player.teleport(51,0,21,0); PR.game.input.state.moveZ=1;
   });
-  await expect.poll(() => page.evaluate(() => PR.game.player.position.z)).toBeLessThan(20);
-  await expect.poll(async () => Math.max(...await page.evaluate(() => soundMeter.read()))).toBeGreaterThan(0.001);
+  // Measure the entire walk so a short step cannot fall between separate sampling windows.
+  await expect.poll(() => page.evaluate(() => PR.game.player.position.z)).toBeLessThan(14);
+  const audible = await page.evaluate(() => { PR.game.input.state.moveZ=0; return soundMeter.end(); });
+  expect(Math.max(...audible)).toBeGreaterThan(0.001);
   await page.locator('#btn-pause').click();
   await slider(page, '#rng-movementVolume', 0);
   await page.locator('#btn-resume').click();
   await expect.poll(() => page.evaluate(() => soundMeter.context.state)).toBe('running');
-  await page.evaluate(() => { PR.game.player.teleport(51,0,21,0); PR.game.input.state.moveZ=1; });
-  await expect.poll(() => page.evaluate(() => PR.game.player.position.z)).toBeLessThan(20);
-  await expect.poll(async () => Math.max(...await page.evaluate(() => soundMeter.read()))).toBeLessThan(0.00001);
+  await page.evaluate(async () => { await soundMeter.begin(); PR.game.player.teleport(51,0,21,0); PR.game.input.state.moveZ=1; });
+  await expect.poll(() => page.evaluate(() => PR.game.player.position.z)).toBeLessThan(14);
+  const muted = await page.evaluate(() => { PR.game.input.state.moveZ=0; return soundMeter.end(); });
+  expect(Math.max(...muted)).toBeLessThan(0.00001);
 });
 
 test('water entry has bounded bubbles, reduced motion disables them, and tile shaders render', async ({ page }, testInfo) => {
