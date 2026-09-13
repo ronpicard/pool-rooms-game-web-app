@@ -1,5 +1,5 @@
 
-/* audio.js — Web Audio synthesis: hum, water lap, drips, footsteps, splash, underwater filter, teleport. */
+/* audio.js — Web Audio synthesis: hum, water lap, drips, footsteps, splash, swim strokes, underwater filter, teleport. */
 
 
   /** Tuning constants (seconds / Hz) shared by several voices. */
@@ -42,6 +42,7 @@
     let disposed = false;
     let underwater = false;
     let volume = 0.8;
+    let swimSide = 1;
 
     // Bus nodes (created together with the context).
     let master = null;      // GainNode -> destination
@@ -588,7 +589,11 @@
       if (typeof next.gentleSound === 'boolean') mix.gentleSound = next.gentleSound;
       if (!live()) return;
       for (const name of ['environment', 'movement', 'music']) {
-        channels[name].gain.gain.setTargetAtTime(mix[name + 'Volume'] * (name === 'movement' && mix.gentleSound ? 0.65 : 1), ctx.currentTime, 0.05);
+        const gain = channels[name].gain.gain;
+        const level = mix[name + 'Volume'] * (name === 'movement' && mix.gentleSound ? 0.65 : 1);
+        gain.cancelAndHoldAtTime(ctx.currentTime);
+        // Reach actual silence after a bounded fade, including changes made while paused.
+        gain.linearRampToValueAtTime(level, ctx.currentTime + 0.05);
       }
       comfortFilter.frequency.setTargetAtTime(mix.gentleSound ? 4800 : OPEN_CUTOFF, ctx.currentTime, 0.1);
       if (!mix.musicVolume) stopMusic();
@@ -723,6 +728,65 @@
       thump.start(t);
       thump.stop(t + 0.27);
       cleanupOnEnd(noise, [out, bp, ng, tg].concat(sends));
+    }
+
+    /** A rounded water pull, surface froth and small bubbles moving past alternating hands. */
+    function swimStroke(intensity = 1) {
+      if (!canPlay()) return;
+      const amp = Math.min(1.5, Math.max(0, Number(intensity) || 0));
+      if (!amp) return;
+      const t = ctx.currentTime, length = rand(0.62, 0.72);
+      const noise = noiseSource(false), filter = ctx.createBiquadFilter(), gain = ctx.createGain();
+      const out = ctx.createGain(), pan = makePanner(swimSide * 0.42);
+      if (pan) {
+        pan.pan.setValueAtTime(swimSide * 0.42, t);
+        pan.pan.linearRampToValueAtTime(swimSide * 0.12, t + length);
+        out.connect(pan);
+      }
+      swimSide *= -1;
+      const pitch = rand(0.9, 1.1);
+      filter.type = 'bandpass'; filter.Q.value = 0.55;
+      filter.frequency.setValueAtTime(underwater ? 230 : 380 * pitch, t);
+      filter.frequency.exponentialRampToValueAtTime((underwater ? 480 : 950) * pitch, t + 0.16);
+      filter.frequency.exponentialRampToValueAtTime(180 * pitch, t + length);
+      gain.gain.setValueAtTime(0, t);
+      gain.gain.linearRampToValueAtTime(0.16 * amp, t + 0.1);
+      gain.gain.exponentialRampToValueAtTime(0.045 * amp, t + length * 0.55);
+      gain.gain.exponentialRampToValueAtTime(0.0005, t + length);
+      gain.gain.linearRampToValueAtTime(0, t + length + 0.03);
+      noise.connect(filter); filter.connect(gain); gain.connect(out);
+      const sends = route(pan || out, 1, 0.12, 'movement');
+      const nodes = [noise, filter, gain, out, ...(pan ? [pan] : []), ...sends];
+
+      // A soft, broad wash at the surface replaces the single narrow noise sweep.
+      if (!underwater) {
+        const froth = noiseSource(false), foamFilter = ctx.createBiquadFilter(), foamGain = ctx.createGain();
+        foamFilter.type = 'bandpass'; foamFilter.Q.value = 0.45;
+        foamFilter.frequency.setValueAtTime(2400 * pitch, t);
+        foamFilter.frequency.exponentialRampToValueAtTime(800 * pitch, t + 0.38);
+        foamGain.gain.setValueAtTime(0, t);
+        foamGain.gain.linearRampToValueAtTime(0.055 * amp, t + 0.04);
+        foamGain.gain.exponentialRampToValueAtTime(0.0005, t + 0.4);
+        foamGain.gain.linearRampToValueAtTime(0, t + 0.44);
+        froth.connect(foamFilter); foamFilter.connect(foamGain); foamGain.connect(out);
+        froth.start(t, noiseOffset(0.45), 0.45);
+        nodes.push(froth, foamFilter, foamGain);
+      }
+      for (let i=0;i<3;i++) {
+        const bubble = ctx.createOscillator(), bubbleGain = ctx.createGain();
+        const at = t + 0.16 + i * 0.1 + rand(0, 0.025), frequency = rand(280, 620);
+        bubble.frequency.setValueAtTime(frequency, at);
+        bubble.frequency.exponentialRampToValueAtTime(frequency * 0.55, at + 0.09);
+        bubbleGain.gain.setValueAtTime(0, at);
+        bubbleGain.gain.linearRampToValueAtTime(0.022 * amp, at + 0.012);
+        bubbleGain.gain.exponentialRampToValueAtTime(0.0005, at + 0.1);
+        bubbleGain.gain.linearRampToValueAtTime(0, at + 0.12);
+        bubble.connect(bubbleGain); bubbleGain.connect(out);
+        bubble.start(at); bubble.stop(at + 0.13);
+        nodes.push(bubble, bubbleGain);
+      }
+      noise.start(t, noiseOffset(length + 0.05), length + 0.05);
+      cleanupOnEnd(noise, nodes);
     }
 
     function waterDrip() {
@@ -870,9 +934,16 @@
           const distance = Math.hypot(voice.position.x-listenerPosition.x, voice.position.z-listenerPosition.z);
           const blocked = distance < 100 && soundScene?.occluded(listenerPosition, voice.position);
           voice.filter.frequency.setTargetAtTime(blocked ? 550 : 2600, now, 0.4);
-          voice.gain.gain.setTargetAtTime(distance < 100 && !outdoor ? (blocked ? 0.025 : 0.11) : 0, now, 0.6);
+          voice.gain.gain.setTargetAtTime(distance < 100 && !outdoor ? (blocked ? 0.025 : 0.11) * (voice.position.level ?? 1) : 0, now, 0.6);
         }
         const water = soundScene?.nearestWater(listenerPosition);
+        if (s.room === 'Lazy River') {
+          const open = soundScene?.river?.openness(listenerPosition.x,listenerPosition.z) || 0;
+          reverbReturn.gain.setTargetAtTime(open ? 0.2 : 0.64, now, 1.2);
+          movementReverb.gain.setTargetAtTime(open ? 0.14 : 0.55, now, 1.2);
+          reflectionDelay.delayTime.setTargetAtTime(open ? 0.07 : 0.22, now, 1.2);
+          airGain.gain.setTargetAtTime(open ? 0.035 : 0, now, 1.2);
+        }
         if (water) {
           movePanner(lapPanner, water, now);
           lapFilter.frequency.setTargetAtTime(soundScene.occluded(listenerPosition, water) ? 400 : 1800, now, 0.4);
@@ -960,11 +1031,23 @@
     }
 
     return {
+      resonate(position) {
+        if (!canPlay()) return;
+        const t=ctx.currentTime;
+        for(const frequency of [220,440.6]) {
+          const osc=ctx.createOscillator(), gain=ctx.createGain(), pan=spatialPanner(position,5);
+          osc.frequency.value=frequency;
+          gain.gain.setValueAtTime(0,t); gain.gain.linearRampToValueAtTime(0.07,t+0.045); gain.gain.exponentialRampToValueAtTime(0.0001,t+3.5);
+          osc.connect(gain); gain.connect(pan);
+          const sends=route(pan,0.7,0.7);
+          osc.start(t); osc.stop(t+3.6); cleanupOnEnd(osc,[gain,pan,...sends]);
+        }
+      },
       unlock: unlock,
       isReady: isReady,
       start: start,
       setVolume: setVolume,
-      setMix, setScene, waterDrip, ballContact,
+      setMix, setScene, waterDrip, ballContact, swimStroke,
       setUnderwater: setUnderwater,
       setPaused: setPaused,
       footstep: footstep,

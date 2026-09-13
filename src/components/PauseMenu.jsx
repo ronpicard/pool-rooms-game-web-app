@@ -58,8 +58,11 @@ export function PauseMenu({ state, ui }) {
           <button id="btn-new-seed" onClick={() => ui.action("onNewSeed")} className="btn" type="button">Restart walk</button>
         </div>
 
+        {state.completed && <details className="revisit-places"><summary>Return to a favorite place</summary><div className="revisit-list">{state.visited.map(name=><button className="btn" type="button" key={name} onClick={()=>ui.action('onRevisit',name)}>{name}</button>)}</div></details>}
+        {state.discoveries.length>0 && <details className="found-places"><summary>Little discoveries</summary><ul>{state.discoveries.map(name=><li key={name}>{name}</li>)}</ul></details>}
+
         <p className="pause-hint" data-platform="desktop" hidden={state.touch}>WASD move &middot; Shift sprint &middot; Space jump / up &middot; Ctrl / C down &middot; Esc pause</p>
-        <p className="pause-hint" data-platform="touch" hidden={!state.touch}>Left: joystick &middot; Right: look, double-tap sprint &middot; ▲ jump / surface &middot; <span className="pause-icon"></span> pause</p>
+        <p className="pause-hint" data-platform="touch" hidden={!state.touch}>Left: joystick &middot; Right: drag to look &middot; Sprint: toggle faster movement &middot; Jump / up: jump or surface &middot; Dive: swim down</p>
         <div id="debug-line" className="mono">{state.debug}</div>
       </div>
     </div>

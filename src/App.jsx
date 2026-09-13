@@ -24,7 +24,7 @@ export default function App() {
     }
   }, [state.menu, state.touch, state.ready]);
   return (
-  <div id="app" data-reduced-motion={state.settings.reducedMotion}>
+  <div id="app" data-touch={state.touch} data-reduced-motion={state.settings.reducedMotion}>
     <canvas id="c" aria-label="Poolrooms 3D view"></canvas>
     <div id="vignette" aria-hidden="true"></div>
     <div id="water-lens" aria-hidden="true"></div>
@@ -35,8 +35,10 @@ export default function App() {
     </div>
 
     
-    <div id="hud" hidden={state.menu === "start" || !!state.error}>
-      <button id="btn-pause" className="pause-icon" type="button" aria-label="Pause" hidden={!!state.menu} onClick={() => ui.action("onPause")}></button>
+    <div id="hud" hidden={state.menu === "start" || !!state.error || state.seatHidden}>
+      <button id="btn-pause" className="pause-icon" type="button" aria-label="Pause" hidden={!!state.menu}
+        onPointerDown={event => { event.preventDefault(); ui.action("onPause"); }}
+        onClick={event => { if (event.detail === 0) ui.action("onPause"); }}></button>
     </div>
 
     
@@ -44,19 +46,27 @@ export default function App() {
       <div id="joystick" aria-hidden="true">
         <div id="joystick-knob"></div>
       </div>
-      <div id="sprint-indicator" aria-live="polite">sprint</div>
-      <button id="btn-jump" type="button" aria-label="Jump or surface">▲</button>
+      <div className="touch-guide touch-move" aria-hidden="true"><span>✥</span>Move</div>
+      <div className="touch-guide touch-look" aria-hidden="true">Drag to look</div>
+      <div className="touch-actions">
+        <button id="sprint-indicator" type="button" aria-label="Sprint" aria-pressed="false">Sprint</button>
+        <button id="btn-jump" type="button" aria-label="Jump or surface"><span aria-hidden="true">↑</span><small>Jump / up</small></button>
+        <button id="btn-dive" type="button" aria-label="Dive"><span aria-hidden="true">↓</span><small>Dive</small></button>
+      </div>
     </div>
 
     
-    <button id="btn-rest" className="rest-prompt" hidden={!state.canRest || state.resting || !!state.menu} onClick={() => ui.action("onRest")}>{state.restPrompt}<span hidden={state.touch}> E </span></button>
-    <div id="quiet-rest" className="quiet-rest" hidden={!state.resting || state.restEnding || !!state.menu}>
+    <button id="btn-interact" className="rest-prompt" hidden={!state.interactionLabel || state.resting || !!state.menu} onClick={()=>ui.action('onInteract')}>{state.interactionLabel}<span hidden={state.touch}> E </span></button>
+    <button id="btn-rest" className="rest-prompt" hidden={!state.canRest || state.resting || !!state.menu || !!state.interactionLabel} onClick={() => ui.action("onRest")}>{state.restPrompt}<span hidden={state.touch}> E </span></button>
+    <div id="quiet-rest" className="quiet-rest" hidden={!state.resting || state.restEnding || !!state.menu || state.seatHidden}>
       <p>{state.restCaption}</p>
+      <small className="seat-hint">Drag to look around</small>
       <button id="btn-leave-seat" className="btn" onClick={() => ui.action("onRest")}>Get up &amp; keep exploring</button>
+      <button className="btn hide-seat-ui" onClick={()=>ui.action('onHideSeatUI')}>Just the view</button>
     </div>
-    <div id="ending" className="ending" hidden={!state.resting || !state.restEnding || !!state.menu}>
+    <div id="ending" className="ending" hidden={!state.resting || !state.restEnding || !!state.menu || state.seatHidden}>
       <div className="ending-titles"><p className="menu-eyebrow">YOU FOUND THE SKY</p><h2>POOLROOMS</h2><p>There is nowhere else you need to be.</p><div className="ending-credits">A quiet journey through water and light<br />Thank you for exploring.</div></div>
-      <button id="btn-get-up" className="btn" onClick={() => ui.action("onRest")}>Get up & keep exploring</button>
+      <div className="ending-actions"><small className="seat-hint">Drag to look around</small><button id="btn-get-up" className="btn" onClick={() => ui.action("onRest")}>Get up & keep exploring</button><button className="btn hide-seat-ui" onClick={()=>ui.action('onHideSeatUI')}>Just the view</button></div>
     </div>
     <StartMenu state={state} ui={ui} />
     <PauseMenu state={state} ui={ui} />

@@ -41,7 +41,7 @@
   /**
    * Create the input controller (CONTRACT §6). Desktop mode uses pointer lock + keyboard; touch mode uses
    * Pointer Events on the touch layer (floating joystick on the left half, drag-look on the right half,
-   * double-tap on the right half toggles sprint, dedicated jump button).
+   * double-tap on the right half or a button toggles sprint, dedicated jump and dive buttons).
    *
    * @param {Object} opts
    * @param {HTMLCanvasElement} opts.canvas          WebGL canvas (pointer lock target)
@@ -49,7 +49,8 @@
    * @param {HTMLElement} opts.joystickBase          #joystick (positioned with left/top + translate(-50%,-50%) in CSS)
    * @param {HTMLElement} opts.joystickKnob          #joystick-knob
    * @param {HTMLElement} opts.jumpButton            #btn-jump
-   * @param {HTMLElement} opts.sprintIndicator       #sprint-indicator (class 'on' while sprint toggled)
+   * @param {HTMLElement} opts.diveButton            #btn-dive
+   * @param {HTMLElement} opts.sprintIndicator       #sprint-indicator toggle button (class 'on' while sprint toggled)
    * @param {function(): void} [opts.onPauseRequest] called when the game should pause (pointer lock lost / Escape)
    * @param {function(): void} [opts.onFirstGesture] called once on the very first pointerdown/keydown anywhere
    * @returns {Object} input controller
@@ -61,6 +62,7 @@
     const joystickBase = o.joystickBase || null;
     const joystickKnob = o.joystickKnob || null;
     const jumpButton = o.jumpButton || null;
+    const diveButton = o.diveButton || null;
     const sprintIndicator = o.sprintIndicator || null;
     const onPauseRequest = typeof o.onPauseRequest === 'function' ? o.onPauseRequest : null;
     const onFirstGesture = typeof o.onFirstGesture === 'function' ? o.onFirstGesture : null;
@@ -70,6 +72,7 @@
 
     let mode = 'desktop';
     let enabled = false;
+    let lookOnly = false;
     let invertY = false;
     let mouseSens = 0.0022;
     let touchSens = 0.005;
@@ -101,6 +104,7 @@
     /** @type {{time:number, x:number, y:number}|null} */
     let lastTap = null;
     let jumpPointerId = null;
+    let divePointerId = null;
 
     let firstGestureFired = false;
 
@@ -139,7 +143,10 @@
     /** Reflect the sprint toggle on the on-screen indicator. */
     function setSprint(value) {
       state.sprint = value;
-      if (sprintIndicator) sprintIndicator.classList.toggle('on', value);
+      if (sprintIndicator) {
+        sprintIndicator.classList.toggle('on', value);
+        sprintIndicator.setAttribute('aria-pressed', String(value));
+      }
     }
 
     /** Hide the joystick and zero its contribution. */
@@ -158,6 +165,7 @@
       lookPointerId = null;
       lastTap = null;
       jumpPointerId = null;
+      divePointerId = null;
       state.moveX = 0;
       state.moveZ = 0;
       state.jumpHeld = false;
@@ -194,7 +202,7 @@
         if (enabled && !disposed && !locked) requestPause();
         return;
       }
-      if (!active('desktop')) return;
+      if (!active('desktop') || lookOnly) return;
       const code = e.code;
       if (KEY_PREVENT.indexOf(code) !== -1) e.preventDefault();
       if (code === 'Space' && !e.repeat && !keys.has('Space')) jumpQueued = true;
@@ -229,7 +237,7 @@
       locked = isPointerLocked();
       if (lockPending) lockPending.finish(locked);
       // Losing the lock while playing (Escape or focus loss) pauses the game.
-      if (wasLocked && !locked && active('desktop')) requestPause();
+      if (wasLocked && !locked && active('desktop') && !lookOnly) requestPause();
     }
 
     function onLockError() {
@@ -366,8 +374,9 @@
       lookLastX = e.clientX;
       lookLastY = e.clientY;
       lookMoved = Math.max(lookMoved, Math.hypot(e.clientX - lookStartX, e.clientY - lookStartY));
-      lookDX += dx * touchSens;
-      lookDY += dy * touchSens * (invertY ? -1 : 1);
+      const sensitivity = mode === 'desktop' ? mouseSens : touchSens;
+      lookDX += dx * sensitivity;
+      lookDY += dy * sensitivity * (invertY ? -1 : 1);
     }
 
     /**
@@ -377,7 +386,7 @@
      */
     function endLook(cancelled) {
       lookPointerId = null;
-      if (cancelled) return;
+      if (cancelled || lookOnly) return;
       const now = performance.now();
       const isTap = now - lookStartTime < TAP_MAX_MS && lookMoved < DOUBLE_TAP_PX;
       if (!isTap) {
@@ -407,14 +416,14 @@
     }
 
     function onLayerPointerDown(e) {
-      if (!active('touch')) return;
+      if (!active('touch') && !(lookOnly && active('desktop'))) return;
       if (isButtonTarget(e)) return;
       e.preventDefault();
       if (e.pointerId === joyPointerId || e.pointerId === lookPointerId) return;
-      capture(touchLayer, e.pointerId);
+      capture(e.currentTarget, e.pointerId);
       // Half split is recomputed per event so rotation / resize is always respected. The left half only ever
       // drives the joystick (extra left-hand touches are ignored); look drags are exclusive to the right half.
-      const leftHalf = e.clientX < window.innerWidth / 2;
+      const leftHalf = !lookOnly && e.clientX < window.innerWidth / 2;
       if (leftHalf) {
         if (joyPointerId === null) startJoystick(e);
       } else if (lookPointerId === null) {
@@ -423,7 +432,7 @@
     }
 
     function onLayerPointerMove(e) {
-      if (!active('touch')) return;
+      if (!active('touch') && !(lookOnly && active('desktop'))) return;
       if (e.pointerId === joyPointerId) {
         e.preventDefault();
         moveJoystick(e);
@@ -434,17 +443,18 @@
     }
 
     function onLayerPointerUp(e) {
-      if (mode !== 'touch') return;
+      if (mode !== 'touch' && !lookOnly) return;
+      if (e.pointerId !== joyPointerId && e.pointerId !== lookPointerId) return;
       if (e.cancelable) e.preventDefault();
       if (e.pointerId === joyPointerId) {
         releaseJoystick();
       } else if (e.pointerId === lookPointerId) {
-        endLook(e.type === 'pointercancel');
+        endLook(e.type !== 'pointerup');
       }
     }
 
     function onJumpDown(e) {
-      if (!active('touch')) return;
+      if (!active('touch') || lookOnly || jumpPointerId !== null) return;
       e.preventDefault();
       e.stopPropagation();
       capture(jumpButton, e.pointerId);
@@ -458,6 +468,35 @@
       if (e.cancelable) e.preventDefault();
       jumpPointerId = null;
       state.jumpHeld = false;
+    }
+
+    function onDiveDown(e) {
+      if (!active('touch') || lookOnly || divePointerId !== null) return;
+      e.preventDefault();
+      e.stopPropagation();
+      capture(diveButton, e.pointerId);
+      divePointerId = e.pointerId;
+      state.downHeld = true;
+    }
+
+    function onDiveUp(e) {
+      if (divePointerId === null || e.pointerId !== divePointerId) return;
+      if (e.cancelable) e.preventDefault();
+      divePointerId = null;
+      state.downHeld = false;
+    }
+
+    function onSprintDown(e) {
+      if (!active('touch') || lookOnly) return;
+      // A second finger does not generate a compatibility click while the joystick is held.
+      e.preventDefault();
+      e.stopPropagation();
+      setSprint(!state.sprint);
+    }
+
+    function onSprintClick(e) {
+      // Keep keyboard / assistive activation; pointer presses are handled exactly once above.
+      if (e.detail === 0 && active('touch') && !lookOnly) setSprint(!state.sprint);
     }
 
     function onContextMenu(e) {
@@ -554,6 +593,8 @@
     on(window, 'keyup', onKeyUp);
     on(window, 'pointerdown', onGlobalPointerDown, true);
     on(window, 'blur', onBlur);
+    on(window, 'resize', releaseAll);
+    on(window, 'orientationchange', releaseAll);
     on(document, 'visibilitychange', onVisibility);
     on(document, 'mousemove', onMouseMove);
     on(document, 'pointerlockchange', onLockChange);
@@ -563,12 +604,28 @@
     on(touchLayer, 'pointermove', onLayerPointerMove, passiveFalse);
     on(touchLayer, 'pointerup', onLayerPointerUp, passiveFalse);
     on(touchLayer, 'pointercancel', onLayerPointerUp, passiveFalse);
+    on(touchLayer, 'lostpointercapture', onLayerPointerUp);
     on(touchLayer, 'contextmenu', onContextMenu);
+    // Seated touch and mouse drags work on the view itself, with the movement overlay hidden.
+    on(canvas, 'pointerdown', onLayerPointerDown, passiveFalse);
+    on(canvas, 'pointermove', onLayerPointerMove, passiveFalse);
+    on(canvas, 'pointerup', onLayerPointerUp, passiveFalse);
+    on(canvas, 'pointercancel', onLayerPointerUp, passiveFalse);
+    on(canvas, 'lostpointercapture', onLayerPointerUp);
 
     on(jumpButton, 'pointerdown', onJumpDown, passiveFalse);
     on(jumpButton, 'pointerup', onJumpUp, passiveFalse);
     on(jumpButton, 'pointercancel', onJumpUp, passiveFalse);
+    on(jumpButton, 'lostpointercapture', onJumpUp);
     on(jumpButton, 'pointerleave', onJumpUp);
+
+    on(diveButton, 'pointerdown', onDiveDown, passiveFalse);
+    on(diveButton, 'pointerup', onDiveUp, passiveFalse);
+    on(diveButton, 'pointercancel', onDiveUp, passiveFalse);
+    on(diveButton, 'lostpointercapture', onDiveUp);
+    on(diveButton, 'pointerleave', onDiveUp);
+    on(sprintIndicator, 'pointerdown', onSprintDown, passiveFalse);
+    on(sprintIndicator, 'click', onSprintClick);
 
     const api = {
       /** Current input mode ('desktop' | 'touch'). */
@@ -578,6 +635,7 @@
       state,
       setMode,
       setEnabled,
+      setLookOnly(value) { lookOnly=!!value; releaseAll(); },
       setInvertY,
       setSensitivity,
       requestPointerLock,
@@ -591,4 +649,3 @@
   }
 
   export { createInput };
-

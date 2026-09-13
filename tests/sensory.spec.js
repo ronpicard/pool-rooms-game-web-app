@@ -77,6 +77,23 @@ async function measureAudio(page) {
   });
 }
 
+test('river skylights shorten the audible echo and leaving restores the bath acoustics', async ({page})=>{
+  await page.addInitScript(()=>{
+    const createDelay=BaseAudioContext.prototype.createDelay;
+    BaseAudioContext.prototype.createDelay=function(...args){
+      const delay=createDelay.apply(this,args); window.riverEcho=delay; return delay;
+    };
+  });
+  await start(page);
+  await page.evaluate(()=>PR.game.player.teleport(203,0,52,Math.PI));
+  await expect(page.locator('#arrival')).toContainText('Lazy River');
+  await expect.poll(()=>page.evaluate(()=>window.riverEcho.delayTime.value)).toBeLessThan(0.1);
+  await page.evaluate(()=>PR.game.player.teleport(203,0,65,Math.PI));
+  await expect.poll(()=>page.evaluate(()=>window.riverEcho.delayTime.value)).toBeGreaterThan(0.19);
+  await page.evaluate(()=>PR.game.player.teleport(180,0,28,0));
+  await expect.poll(()=>page.evaluate(()=>window.riverEcho.delayTime.value)).toBeLessThan(0.1);
+});
+
 test('sound preferences validate old saves, persist independently and fit on a phone', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await start(page, { environmentVolume: -2, musicVolume: 'bad', movementVolume: 4, gentleSound: 'yes' });
@@ -126,17 +143,19 @@ test('waterfall sources follow the architecture and walls muffle sound while doo
   await start(page);
   const result = await page.evaluate(() => {
     const scene = PR.game.world.soundscape;
+    // Cross only the doorway; a ray deep into the hall also tests slide rails and furnishings.
+    const passage = {x:104,y:1.6,z:12}, hall = {x:110,y:1.6,z:12};
     return {
       sources: scene.rain,
       wall: scene.occluded({x:104,y:1.6,z:2},{x:124,y:0.25,z:0}),
-      door: scene.occluded({x:104,y:1.6,z:12},{x:124,y:0.25,z:12}),
+      door: [scene.occluded(passage,hall),scene.occluded(hall,passage)],
       nearest: scene.nearestWater({x:114,y:1.6,z:12}),
       start: scene.pierProgress({x:404}), end: scene.pierProgress({x:484}),
     };
   });
   expect(result.sources).toHaveLength(6);
-  expect(result.sources).toContainEqual({x:124,y:0.25,z:0});
-  expect(result.wall).toBe(true); expect(result.door).toBe(false);
+  expect(result.sources).toContainEqual({x:124,y:0.25,z:0,level:1});
+  expect(result.wall).toBe(true); expect(result.door).toEqual([false,false]);
   expect(result.nearest).toEqual({x:116,y:-0.12,z:12});
   expect(result.start).toBe(0); expect(result.end).toBe(1);
 });
@@ -162,6 +181,51 @@ test('footsteps remain audible with environment off and the movement slider sile
   await expect.poll(() => page.evaluate(() => PR.game.player.position.z)).toBeLessThan(14);
   const muted = await page.evaluate(() => { PR.game.input.state.moveZ=0; return soundMeter.end(); });
   expect(Math.max(...muted)).toBeLessThan(0.00001);
+});
+
+test('swimming has quiet strokes, floating settles to silence, and movement mute silences strokes', async ({ page }) => {
+  await measureAudio(page);
+  await start(page, { environmentVolume: 0, movementVolume: 1, musicVolume: 0 });
+  await expect.poll(() => page.evaluate(() => soundMeter.context.state)).toBe('running');
+  await page.evaluate(() => PR.game.player.teleport(132, -1.37, 12, 0));
+  await expect.poll(() => page.evaluate(() => PR.game.player.state.swimming)).toBe(true);
+  // Let the entry splash and its reverb finish before listening for swimming alone.
+  await expect.poll(async () => Math.max(...await page.evaluate(() => soundMeter.read()))).toBeLessThan(0.00001);
+  await page.evaluate(async () => { await soundMeter.begin(); PR.game.input.state.moveX = 1; });
+  await expect.poll(() => page.evaluate(() => PR.game.player.position.x)).toBeGreaterThan(135);
+  const first = Math.max(...await page.evaluate(() => soundMeter.end()));
+  expect(first).toBeGreaterThan(0.0003);
+  expect(first).toBeLessThan(0.025);
+  // A second window verifies recurring strokes, beyond the initial movement.
+  await page.evaluate(() => soundMeter.begin());
+  await expect.poll(() => page.evaluate(() => PR.game.player.position.x)).toBeGreaterThan(139);
+  expect(Math.max(...await page.evaluate(() => { PR.game.input.state.moveX = 0; return soundMeter.end(); }))).toBeGreaterThan(0.0003);
+  await expect.poll(async () => Math.max(...await page.evaluate(() => soundMeter.read()))).toBeLessThan(0.00001);
+
+  // The faster swim pace must keep the layered strokes audible without building into a loud wash.
+  await page.evaluate(async () => { await soundMeter.begin(); PR.game.input.state.moveX = -1; PR.game.input.state.sprint = true; });
+  await expect.poll(() => page.evaluate(() => PR.game.player.position.x)).toBeLessThan(135);
+  const sprint = Math.max(...await page.evaluate(() => {
+    PR.game.input.state.moveX = 0; PR.game.input.state.sprint = false; return soundMeter.end();
+  }));
+  expect(sprint).toBeGreaterThan(0.0003);expect(sprint).toBeLessThan(0.025);
+  await expect.poll(async () => Math.max(...await page.evaluate(() => soundMeter.read()))).toBeLessThan(0.00001);
+
+  // Vertical swimming also makes sound after the camera goes underwater.
+  await page.evaluate(() => { PR.game.input.state.downHeld = true; });
+  await expect(page.locator('#vignette')).toHaveClass('underwater');
+  await page.evaluate(() => soundMeter.begin());
+  await expect.poll(() => page.evaluate(() => PR.game.player.position.y)).toBeLessThan(-2.9);
+  expect(Math.max(...await page.evaluate(() => { PR.game.input.state.downHeld = false; return soundMeter.end(); }))).toBeGreaterThan(0.00005);
+
+  await page.locator('#btn-pause').click();
+  await expect.poll(() => page.evaluate(() => soundMeter.context.state)).toBe('suspended');
+  await slider(page, '#rng-movementVolume', 0);
+  await page.locator('#btn-resume').click();
+  await expect.poll(async () => Math.max(...await page.evaluate(() => soundMeter.read()))).toBeLessThan(0.00001);
+  const from = await page.evaluate(async () => { await soundMeter.begin(); PR.game.input.state.moveX = -1; return PR.game.player.position.x; });
+  await expect.poll(() => page.evaluate(() => PR.game.player.position.x)).toBeLessThan(from - 3);
+  expect(Math.max(...await page.evaluate(() => { PR.game.input.state.moveX = 0; return soundMeter.end(); }))).toBeLessThan(0.00001);
 });
 
 test('water entry has bounded bubbles, reduced motion disables them, and tile shaders render', async ({ page }, testInfo) => {

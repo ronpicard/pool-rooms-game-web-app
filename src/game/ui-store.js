@@ -2,6 +2,7 @@
 export function createUIStore() {
   let snapshot = {
     menu: 'start', ready: false, seed: '', touch: false, controls: false,
+    canContinue:false, continueRoom:'', visited:[], discoveries:[], completed:false, interactionLabel:'', seatHidden:false,
     settings: { quality: 'medium', inputMode: 'auto', volume: 0.8, environmentVolume: 1, movementVolume: 0.8, musicVolume: 0, gentleSound: false, invertY: false, reducedMotion: false, mode: 'wander' },
     hud: { seed: '—', depth: 0, best: 0, mode: 'wander' },
     compass: { visible: false, angle: 0, near: false },

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 // The flume mesh and ride controller follow the same curve in every room.
-export function createSlide({ points, mesh, material, name, duration = 6.5 }) {
+export function createSlide({ points, mesh, material, name, duration = 6.5, width = 1.2 }) {
   const slide = new THREE.CatmullRomCurve3(points.map(v => new THREE.Vector3(...v)), false, 'centripetal');
   const vertices = [], indices = [];
   const segments = 180, sides = 18;
@@ -10,8 +10,8 @@ export function createSlide({ points, mesh, material, name, duration = 6.5 }) {
     const side = new THREE.Vector3(-t.z,0,t.x).normalize();
     for (let j=0; j<=sides; j++) {
       const angle = -Math.PI/2 + j/sides*Math.PI;
-      const q = p.clone().addScaledVector(side, Math.sin(angle)*1.2);
-      q.y += (1-Math.cos(angle))*1.2;
+      const q = p.clone().addScaledVector(side, Math.sin(angle)*width);
+      q.y += (1-Math.cos(angle))*width;
       vertices.push(q.x,q.y,q.z);
       if (i<segments && j<sides) {
         const a=i*(sides+1)+j, b=a+sides+1;
@@ -25,7 +25,7 @@ export function createSlide({ points, mesh, material, name, duration = 6.5 }) {
   for (const s of [-1,1]) {
     const path = new THREE.CatmullRomCurve3(Array.from({length:100},(_,i)=>{
       const p=slide.getPointAt(i/99), t=slide.getTangentAt(i/99);
-      p.addScaledVector(new THREE.Vector3(-t.z,0,t.x).normalize(),s*1.2); p.y+=1.2; return p;
+      p.addScaledVector(new THREE.Vector3(-t.z,0,t.x).normalize(),s*width); p.y+=width; return p;
     }));
     mesh(new THREE.TubeGeometry(path,150,0.075,8,false), material);
   }
@@ -74,6 +74,20 @@ export function createBeachBalls({ placements, mesh, material, contactShadow, te
   }
   return {
     update(t, dt, camera, onContact) {
+      // Soft contact permits overlap while pushing both balls; movement below still checks pool edges and walls.
+      for(let i=0;i<balls.length;i++) for(let j=i+1;j<balls.length;j++) {
+        const a=balls[i], b=balls[j];
+        const dx=b.x-a.x, dz=b.z-a.z, dy=b.mesh.position.y-a.mesh.position.y;
+        const distance=Math.hypot(dx,dy,dz), overlap=a.r+b.r-distance;
+        if(overlap<=0) continue;
+        const horizontal=Math.hypot(dx,dz);
+        // Coincident centers need a stable direction so they can drift apart.
+        const nx=horizontal>0.0001 ? dx/horizontal : 1;
+        const nz=horizontal>0.0001 ? dz/horizontal : 0;
+        const push=overlap*8*dt;
+        a.vx-=nx*push; a.vz-=nz*push;
+        b.vx+=nx*push; b.vz+=nz*push;
+      }
       for(const b of balls) {
         if(camera) {
           const dx=b.x-camera.position.x,dz=b.z-camera.position.z,d=Math.hypot(dx,dz);

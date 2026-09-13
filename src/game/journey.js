@@ -4,20 +4,25 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { textures as textureFactory } from './textures.js';
 import { createSlide, createBeachBalls } from './pool-toys.js';
 import { createRainfall, createPoolSteam } from './water-effects.js';
+import { createLazyRiver, RIVER_FOOTPRINT } from './lazy-river.js';
+import { addRoomDetails } from './room-details.js';
+import { PAVILION } from './landmark.js';
 
 // One connected route. Door positions, pool steps, meshes and collision use these same dimensions.
 const ROOMS = [
   { name: 'Blue Arcade', x0: 48, x1: 96, z0: 0, z1: 24, h: 12, entry: 12, exit: 12, color: 0x639bab, pool: [54, 7, 90, 17, 0.6] },
   { name: 'Water passage', x0: 96, x1: 108, z0: 8, z1: 16, h: 3.6, entry: 12, exit: 12, color: 0xa5cbc7 },
-  { name: 'Rain Hall', x0: 108, x1: 164, z0: -44, z1: 40, h: 26, entry: 12, exit: 28, northDoor: 136, color: 0xb4d4ca, pool: [116, -36, 156, 32, 3.5] },
+  { name: 'Rain Hall', x0: 108, x1: 164, z0: -44, z1: 40, h: 26, entry: 12, exit: 28, northDoor: 136, southDoor: 124, hiddenSouth: true, color: 0xb4d4ca, pool: [116, -36, 156, 32, 3.5] },
   { name: 'Quiet passage', x0: 164, x1: 176, z0: 24, z1: 32, h: 3.2, entry: 28, exit: 28, color: 0xbfa4a4 },
-  { name: 'Sunken Baths', x0: 176, x1: 224, z0: 0, z1: 40, h: 4.8, entry: 28, exit: 12, color: 0xb89fba, pool: [183, 7, 197, 21, 0.9] },
+  { name: 'Sunken Baths', x0: 176, x1: 224, z0: 0, z1: 40, h: 4.8, entry: 28, exit: 12, southDoor: 210, southDestination: 'Lazy River', color: 0xb89fba, pool: [183, 7, 197, 21, 0.9] },
   { name: 'The threshold', x0: 224, x1: 236, z0: 8, z1: 16, h: 3.2, entry: 12, exit: 12, color: 0x6c999c },
   { name: 'Column Sea', x0: 236, x1: 308, z0: -48, z1: 72, h: 29, entry: 12, exit: 12, southDoor: 272, color: 0x709fa1, pool: [243, -41, 301, 65, 4.5] },
   { name: 'Toward the sky', x0: 308, x1: 336, z0: 8, z1: 16, h: 10, entry: 12, exit: 12, color: 0xe5d1b1 },
   { name: 'Sky Pool', x0: 336, x1: 404, z0: -16, z1: 44, h: 80, entry: 12, exit: null, color: 0xe4c69b, pool: [345, -7, 390, 25, 1.5], outdoor: true },
   { name: 'Changing Gallery', x0: 116, x1: 156, z0: -76, z1: -44, h: 7.5, southDoor: 136, color: 0x7ba9a3, pool: [123, -67, 149, -55, 0.6], branch: true, returnTo: 'Rain Hall' },
-  { name: 'Lantern Baths', x0: 248, x1: 296, z0: 72, z1: 112, h: 9, northDoor: 272, color: 0xbb896f, pool: [254, 80, 290, 104, 1.2], branch: true, returnTo: 'Column Sea' },
+  { name: 'Lantern Baths', x0: 248, x1: 296, z0: 72, z1: 112, h: 9, entry: 92, northDoor: 272, color: 0xbb896f, pool: [254, 80, 290, 104, 1.2], branch: true, returnTo: 'Column Sea' },
+  { name: 'Rain Garden', x0: 116, x1: 144, z0: 40, z1: 64, h: 6, northDoor: 124, color: 0x89b79e, pool: [122, 46, 138, 58, 0.9], branch: true, returnTo: 'Rain Hall' },
+  { name: 'Stillwater Nook', x0: 182, x1: 200, z0: 58, z1: 78, h: 4.8, exit: 68, color: 0xe0bc93, pool: [184, 62, 194, 72, 0.6], branch: true, returnTo: 'Lazy River' },
 ];
 const SKY_POOL = ROOMS.find(room => room.name === 'Sky Pool');
 const PIER_CENTER_Z = (SKY_POOL.z0 + SKY_POOL.z1) / 2;
@@ -29,6 +34,9 @@ const REST_STOPS = [
   ...[351, 361].map(x => ({ x, y: 6, z: 32, yaw: 0, room: 'Sky Pool', caption: 'A little sun. A little stillness.' })),
   { x: 136, y: 0, z: -70.7, yaw: Math.PI, room: 'Changing Gallery', caption: 'Leave the outside world at the door.' },
   ...[259,285].map(x=>({x,y:0,z:108,yaw:0,room:'Lantern Baths',caption:'Water and a little warmth.'})),
+  { x: 140, y: 0, z: 59, yaw: Math.PI / 2, room: 'Rain Garden', caption: 'A garden, hidden in the sound of rain.' },
+  { x: 197, y: 0, z: 75, yaw: 0, room: 'Stillwater Nook', caption: 'Let the river go on without you.' },
+  { x: 202.5, y: 0, z: 78, yaw: -Math.PI / 2, room: 'Lazy River', caption: 'A little pause beside the current.' },
   REST_SPOT,
 ];
 const inside = (x, z, p) => x > p[0] && x < p[2] && z > p[1] && z < p[3];
@@ -38,7 +46,9 @@ export function createJourney({ group, textures, createWater, poolMaterial }) {
   root.name = 'The journey';
   group.add(root);
   const owned = new Set(), waterMeshes = [], sections = [], walls = [], pools = [], rainSources = [];
-  const slides = [], stairs = [], beachBalls = [], waterEffects = [];
+  const slides = [], beachBalls = [], waterEffects = [];
+  const interactions = [], animations = [], rainControl = { quiet: false };
+  let river;
   const material = (color, extra = {}) => {
     const m = new THREE.MeshStandardMaterial({ color, roughness: 0.62, ...tileFinish(extra.map, textures), ...extra });
     owned.add(m); return m;
@@ -49,6 +59,7 @@ export function createJourney({ group, textures, createWater, poolMaterial }) {
   const ceiling = material(0xe8eee7, { map: textures.ceiling, roughness: 0.92 });
   const brass = material(0xbb9c61, { roughness: 0.35, metalness: 0.45 });
   const coral = material(0xd78065, { roughness: 0.45 });
+  const foliage = material(0x608f72, { roughness:0.88 });
   const lantern = new THREE.MeshBasicMaterial({ color: 0xffd497 }); owned.add(lantern);
   const glow = new THREE.MeshBasicMaterial({ color: 0xffecc9, side: THREE.DoubleSide }); owned.add(glow);
   const shade = new THREE.MeshBasicMaterial({ color: 0x254c59, map: textures.glow, transparent: true, opacity: 0.22, depthWrite: false }); owned.add(shade);
@@ -122,8 +133,11 @@ export function createJourney({ group, textures, createWater, poolMaterial }) {
     const low = center-4, high = center+4;
     if (low > r.z0) box(x, h/2, (r.z0+low)/2, 0.6, h, low-r.z0, ivory, true);
     if (high < r.z1) box(x, h/2, (high+r.z1)/2, 0.6, h, r.z1-high, ivory, true);
-    if (h > threshold+3.2) box(x, (h+threshold+3.2)/2, center, 0.6, h-threshold-3.2, 8, ivory, true);
-    box(x-0.32, threshold+2.8, center, 0.05, 0.1, 7.8, glow);
+    const lintelY = threshold+3.2;
+    if (h > lintelY) box(x, (h+lintelY)/2, center, 0.6, h-lintelY, 8, ivory, true);
+    // Mount on this room's lintel face, or against its ceiling when the opening reaches it.
+    const inward = x===r.x0 ? 1 : -1;
+    box(x+inward*0.32, Math.min(lintelY+0.1,h-0.05), center, 0.05, 0.1, 7.8, glow);
   }
   function sign(destination, x, y, z, yaw, caption = 'Continue your walk') {
     const texture = textureFactory.createLabelTexture(destination, { plaque: true, caption });
@@ -151,9 +165,9 @@ export function createJourney({ group, textures, createWater, poolMaterial }) {
     }
     if (door !== undefined) {
       box(door,(h+3.2)/2,z,8,h-3.2,0.6,ivory,true);
-      box(door,2.9,z+inward*0.32,7.8,0.1,0.05,glow);
-      const destination = room.returnTo || (room.northDoor ? 'Changing Gallery' : 'Lantern Baths');
-      sign(destination,door-inward*5.6,1.9,z+inward*0.32,inward===1?0:Math.PI,room.branch?'Back to the main walk':'A quieter detour');
+      box(door,3.3,z+inward*0.32,7.8,0.1,0.05,glow);
+      const destination = room.returnTo || (inward === 1 ? room.northDestination || 'Changing Gallery' : room.southDestination || 'Lantern Baths');
+      if (!(room.hiddenSouth && inward === -1)) sign(destination,door-inward*5.6,1.9,z+inward*0.32,inward===1?0:Math.PI,room.branch?'Back to the main walk':'A quieter detour');
     }
     if (!room.outdoor) box((room.x0+room.x1)/2,h-0.65,z+inward*0.34,room.x1-room.x0,0.18,0.1,glow);
   }
@@ -205,13 +219,13 @@ export function createJourney({ group, textures, createWater, poolMaterial }) {
     water.material.uniforms.uRain.value = room.name === 'Rain Hall' ? 1 : 0;
     if (room.name === 'Rain Hall') water.material.defines.RAIN = 1;
     water.name = room.name + ' water'; section.add(water); waterMeshes.push(water); owned.add(water.geometry);
-    if (room.name === 'Sunken Baths' || room.name === 'Lantern Baths') {
+    if (['Sunken Baths','Lantern Baths','Rain Garden','Stillwater Nook'].includes(room.name)) {
       const steam = createPoolSteam(p,-0.12,Math.round(x0*17+z0*3));
       section.add(steam.mesh); owned.add(steam.mesh.geometry); owned.add(steam.mesh.material);
       waterEffects.push(steam);
     }
   }
-  function toys(room, placements, slideConfig) {
+  function toys(room, placements, slideConfigs = []) {
     const elevation = room.outdoor ? 6 : 0;
     const mesh = (geo, mat, x = 0, y = 0, z = 0) => {
       owned.add(geo);
@@ -229,41 +243,43 @@ export function createJourney({ group, textures, createWater, poolMaterial }) {
         return shadow;
       },
     }) });
-    if (!slideConfig) return;
-    const { x, z, height, name, color, points } = slideConfig;
-    const count = height/0.25, top = z-count*0.625;
-    const slideMaterial = material(color,{roughness:0.22,metalness:0.12,side:THREE.DoubleSide});
-    const slide = createSlide({
-      name, material: slideMaterial, duration: 5,
-      points: points.map(([px,py,pz])=>[px,py+elevation,pz]),
-      mesh(geo,mat) { return mesh(geo.translate(0,-elevation,0),mat); },
-    });
-    slides.push(slide);
-    stairs.push({x,z,top,height,elevation});
-    for (let i=0;i<count;i++) box(x,(i+1)*0.25-0.15,z-(i+0.5)*0.625,3,0.3,0.625,ivory);
-    box(x-0.75,height-0.15,top-1.5,4.5,0.3,3,ivory);
-    // Sloping handrails enclose the stairs; the landing opens directly into the flume.
-    for (const side of [-1,1]) {
-      const a = new THREE.Vector3(x+side*1.65,1,z);
-      const b = new THREE.Vector3(x+side*1.65,height+1,top);
-      const rail = new THREE.CylinderGeometry(0.07,0.07,a.distanceTo(b),8);
-      rail.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0),b.clone().sub(a).normalize()));
-      const center = a.clone().add(b).multiplyScalar(0.5);
-      geometry(rail,brass,center.x,center.y,center.z);
-      for(let i=0;i<=count;i+=4) box(a.x,i*0.25+0.5,z-i*0.625,0.08,1,0.08,brass);
-      walls.push({x0:a.x-0.08,x1:a.x+0.08,z0:top,z1:z,y0:0,y1:height+2});
+    for (const slideConfig of Array.isArray(slideConfigs) ? slideConfigs : [slideConfigs]) {
+      const { x, z, height, name, color, points, entrySide = -1, width = 3, treadDepth = 0.625, duration = 5, supportTimes = [0.12,0.35,0.6] } = slideConfig;
+      const count = height/0.25, top = z-count*treadDepth, halfWidth = width/2;
+      const slideMaterial = material(color,{roughness:0.22,metalness:0.12,side:THREE.DoubleSide});
+      const slide = createSlide({
+        name, material: slideMaterial, duration,
+        points: points.map(([px,py,pz])=>[px,py+elevation,pz]),
+        mesh(geo,mat) { return mesh(geo.translate(0,-elevation,0),mat); },
+      });
+      slides.push(slide);
+      // Thin solid treads leave the deck or water beneath the stairs accessible.
+      for (let i=0;i<count;i++) box(x,(i+1)*0.25-0.15,z-(i+0.5)*treadDepth,width,0.3,treadDepth,ivory,true);
+      box(x+entrySide*0.75,height-0.15,top-1.5,width+1.5,0.3,3,ivory,true);
+      // Sloping handrails enclose the stairs; the landing opens directly into the flume.
+      for (const side of [-1,1]) {
+        const a = new THREE.Vector3(x+side*(halfWidth+0.15),1,z);
+        const b = new THREE.Vector3(x+side*(halfWidth+0.15),height+1,top);
+        const rail = new THREE.CylinderGeometry(0.07,0.07,a.distanceTo(b),8);
+        rail.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0),b.clone().sub(a).normalize()));
+        const center = a.clone().add(b).multiplyScalar(0.5);
+        geometry(rail,brass,center.x,center.y,center.z);
+        for(let i=0;i<=count;i+=4) box(a.x,i*0.25+0.5,z-i*treadDepth,0.08,1,0.08,brass);
+        // Follow the stair slope instead of extending the railing down to the ground.
+        for(let i=0;i<count;i++) walls.push({x0:a.x-0.08,x1:a.x+0.08,z0:z-(i+1)*treadDepth,z1:z-i*treadDepth,y0:(i+1)*0.25-0.3,y1:(i+1)*0.25+2});
+      }
+      for(const [rx,rz,w,d] of [[x+entrySide*0.75,top-3,width+1.5,0.08],[x-entrySide*(halfWidth+0.15),top-1.5,0.08,3]]) {
+        box(rx,height+1,rz,w,0.08,d,brass);
+        walls.push({x0:rx-w/2,x1:rx+w/2,z0:rz-d/2,z1:rz+d/2,y0:height,y1:height+2});
+      }
+      for(const t of supportTimes) {
+        const p = slide.curve.getPointAt(t), bottom = terrain(p.x,p.z).floor-elevation;
+        const h = p.y-elevation-bottom;
+        box(p.x,bottom+h/2,p.z,0.24,h,0.24,brass,true);
+      }
+      box(x+halfWidth+0.32,1.15,z-0.5,0.08,2.3,0.08,brass);
+      sign(name,x+halfWidth+0.27,1.8,z-0.5,-Math.PI/2,'Walk up the steps to ride');
     }
-    for(const [rx,rz,w,d] of [[x-0.75,top-3,4.5,0.08],[x+1.65,top-1.5,0.08,3]]) {
-      box(rx,height+1,rz,w,0.08,d,brass);
-      walls.push({x0:rx-w/2,x1:rx+w/2,z0:rz-d/2,z1:rz+d/2,y0:height,y1:height+2});
-    }
-    for(const t of [0.12,0.35,0.6]) {
-      const p = slide.curve.getPointAt(t), bottom = terrain(p.x,p.z).floor-elevation;
-      const h = p.y-elevation-bottom;
-      box(p.x,bottom+h/2,p.z,0.24,h,0.24,brass,true);
-    }
-    box(x+1.82,1.15,z-0.5,0.08,2.3,0.08,brass);
-    sign(name,x+1.77,1.8,z-0.5,-Math.PI/2,'Walk up the steps to ride');
   }
   for (const r of ROOMS) {
     section = new THREE.Group(); section.name = r.name; batches = new Map();
@@ -335,14 +351,37 @@ export function createJourney({ group, textures, createWater, poolMaterial }) {
       waterEffects.push(rainfall);
       const rainWater = waterMeshes.find(water=>water.name==='Rain Hall water');
       rainWater.material.uniforms.uRainSources.value = rainSources.map(source=>new THREE.Vector2(source.x,source.z));
+      animations.push(()=>{
+        rainfall.mesh.visible=!rainControl.quiet;
+        rainMaterial.opacity=rainControl.quiet?0.035:0.18;
+        rainWater.material.uniforms.uRain.value=rainControl.quiet?0:1;
+        for(const source of rainSources) source.level=rainControl.quiet?0.22:1;
+      });
+      geometry(new THREE.PlaneGeometry(7.8,3.2),rainMaterial,124,1.6,39.4);
       for(const x of [112,160]) for(const z of [-38,-10,34]) {
         box(x,r.h/2,z,1.6,r.h,1.6,accent,true);
         geometry(new THREE.PlaneGeometry(4.4,4.4),shade,x,0.018,z,[-Math.PI/2,0,0]);
       }
-      toys(r,[[132,8,0.9],[141,-14,0.75],[129,25,1.05]],{
+      // Two full turns keep the stacked flume floors seven units apart.
+      const spiralPoints = Array.from({length:49},(_,i)=>{
+        const angle = -Math.PI/2+i/48*Math.PI*4;
+        return [133+Math.cos(angle)*10,17.5-i/48*14,-22.5+Math.sin(angle)*10];
+      });
+      toys(r,[[132,8,0.9],[141,-14,0.75],[129,25,1.05]],[{
         name:'Rain Slide',x:160,z:20,height:4,color:0x4ebbb9,
         points:[[158,4,8.5],[155,3.8,8.5],[152,3.2,10],[147,2.3,14],[141,1.3,14],[137,0.4,10],[136,-0.05,6]],
-      });
+      },{
+        name:'Rain Spiral',x:114.2,z:10,height:18,entrySide:1,width:2.2,color:0x79cdd1,duration:14,supportTimes:[],
+        points:[[116.2,18,-36.5],[122,17.85,-36.5],...spiralPoints,[141,2,-32],[147,0.8,-29],[149,-0.05,-24]],
+      }]);
+      // A central mast and radial arms support each turn without piercing the lower flume.
+      box(133,7,-22.5,0.7,21,0.7,brass,true);
+      for(let i=0;i<spiralPoints.length;i+=6) {
+        const [x,y,z] = spiralPoints[i], angle = Math.atan2(z+22.5,x-133);
+        geometry(new THREE.BoxGeometry(10,0.18,0.22),brass,(133+x)/2,y-0.25,(-22.5+z)/2,[0,-angle,0]);
+      }
+      for(let i=16;i<=72;i+=16) box(114.2,i*0.125,10-i*0.625,0.24,i*0.25,0.24,brass,true);
+      box(114.2,9,-36.5,0.24,18,0.24,brass,true);
     }
     if(r.name==='Sunken Baths') {
       towelShelf(219,2,accent);
@@ -366,6 +405,12 @@ export function createJourney({ group, textures, createWater, poolMaterial }) {
     }
     if (r.name==='Changing Gallery') {
       for(let x=119;x<=153;x+=3.4) {
+        if (Math.abs(x-149.6)<0.01) {
+          box(x,1.9,-75.25,2.9,3.8,0.12,accent,true);
+          for(const dx of [-1.4,1.4]) box(x+dx,1.9,-74.7,0.1,3.8,1.2,accent,true);
+          for(const y of [0.1,1.25,3.75]) box(x,y,-74.7,2.9,0.12,1.2,ivory,true);
+          continue;
+        }
         box(x,1.9,-74.7,2.9,3.8,1.2,accent,true);
         box(x,1.9,-74.04,2.65,3.5,0.08,ivory);
         box(x+0.85,1.8,-73.94,0.09,0.42,0.1,brass);
@@ -388,12 +433,48 @@ export function createJourney({ group, textures, createWater, poolMaterial }) {
       towelShelf(292,76,accent);
       lifebuoy(248.45,2.2,93,Math.PI/2);
       toys(r,[[265,89,0.7],[281,96,0.85]]);
+      sign('Lazy River',248.4,1.8,99,Math.PI/2,'A quieter way to the Sunken Baths');
+    }
+    if (r.name === 'Rain Garden' || r.name === 'Stillwater Nook') {
+      const seat = REST_STOPS.find(spot=>spot.room===r.name);
+      box(seat.x,0.5,seat.z,1.5,1,4,ivory,true);
+      for(const x of [r.x0+2,r.x1-2]) {
+        box(x,0.65,r.z1-2,1.4,1.3,1.4,coral,true);
+        box(x,1.6,r.z1-2,0.08,1.4,0.08,brass);
+        for(let i=0;i<7;i++) {
+          const angle=i*Math.PI*2/7;
+          const leaf=new THREE.SphereGeometry(1,10,6).scale(0.32,0.09,1.25).rotateX(-0.38).rotateY(angle);
+          geometry(leaf,foliage,x+Math.sin(angle)*0.7,2.1+(i%2)*0.25,r.z1-2+Math.cos(angle)*0.7);
+        }
+      }
+      arch(r.x1-2,(r.z0+r.z1)/2,3,1.3,accent);
     }
     if(r.outdoor) {
-      toys(r,[[360,4,0.9],[376,15,1.05],[384,8,0.7]],{
+      const skySpiralPoints = Array.from({length:49},(_,i)=>{
+        const angle = -Math.PI/2-i/48*Math.PI*4;
+        return [360+Math.cos(angle)*11,19.5-i/48*16,7+Math.sin(angle)*11];
+      });
+      toys(r,[[360,4,0.9],[376,15,1.05],[388,8,0.7]],[{
         name:'Sunset Slide',x:395,z:9,height:3.5,color:0xed9271,
         points:[[393,3.5,-1.25],[390,3.3,-1.25],[386,2.8,2],[380,2,5],[375,1.1,2],[377,0.4,-1],[379,-0.05,0]],
-      });
+      },{
+        // Shorter treads keep the southern deck route to the pier open.
+        name:'Sky Spiral',x:383,z:26,height:20,treadDepth:0.45,color:0x77b9df,duration:15,supportTimes:[],
+        points:[[381,20,-11.5],[373,19.85,-11.5],...skySpiralPoints,[353,2,-2],[352,0.8,3],[355,-0.05,6]],
+      }]);
+      // Support both broad turns from the center, leaving the flume and splashdown clear.
+      box(360,9,7,0.7,21,0.7,brass,true);
+      for(let i=0;i<skySpiralPoints.length;i+=6) {
+        const [x,y,z] = skySpiralPoints[i], angle = Math.atan2(z-7,x-360);
+        geometry(new THREE.BoxGeometry(11,0.18,0.22),brass,(360+x)/2,y-0.25,(7+z)/2,[0,-angle,0]);
+      }
+      for(const i of [16,32,56,72,80]) {
+        const z=26-i*0.45, height=i*0.25;
+        // Query the basin beside the stairs so the legs reach the actual pool floor.
+        const floorY=terrain(385,z).floor-6;
+        box(383,(floorY+height)/2,z,0.24,height-floorY,0.24,brass,true);
+      }
+      box(383,10,-11.5,0.24,20,0.24,brass,true);
       for(const x of [340,400]) for(const z of [-12,40]) box(x,5,z,1.2,10,1.2,ivory,true);
       for(const z of [-12,40]) box(370,10,z,61,0.5,1.4,ivory);
       for(let x=341;x<400;x+=4) box(x,10.3,40,0.35,0.3,7,brass);
@@ -428,8 +509,13 @@ export function createJourney({ group, textures, createWater, poolMaterial }) {
       const oceanCenterX = (LEDGE.x0+LEDGE.x1)/2;
       const ocean=createWater(oceanCenterX-1000,PIER_CENTER_Z-1000,oceanCenterX+1000,PIER_CENTER_Z+1000,-3.5,8,{
         ocean:true,
-        // Keep the sea outside the lower indoor floors while it surrounds the raised terrace.
-        landBounds:[-24.6,Math.min(...ROOMS.map(room=>room.z0))-0.6,r.x0,Math.max(...ROOMS.map(room=>room.z1))+0.6],
+        // Cut out each indoor footprint, leaving ocean in the gaps between buildings.
+        // Room walls extend 0.3 units outward; end the cutouts inside that masonry.
+        landBounds:[
+          ...[PAVILION,...ROOMS.filter(room=>!room.outdoor)].map(room=>[room.x0-0.2,room.z0-0.2,room.x1+0.2,room.z1+0.2]),
+          ...RIVER_FOOTPRINT.bounds,
+        ],
+        landArcs:RIVER_FOOTPRINT.arcs,
       });
       ocean.name='Ocean beyond the overlook';
       section.add(ocean); waterMeshes.push(ocean); owned.add(ocean.geometry);
@@ -440,24 +526,29 @@ export function createJourney({ group, textures, createWater, poolMaterial }) {
         cloud.scale.set(42,12,1); section.add(cloud);
       }
     }
+    addRoomDetails(r,{section,owned,geometry,box,material,sign,ivory,brass,coral,lantern,glow,shade,interactions,animations,rainControl});
     finish();
     if (r.outdoor) {
       section.position.y = 6;
       for(let i=wallStart;i<walls.length;i++) { walls[i].y0+=6; walls[i].y1+=6; }
     }
   }
+  section = new THREE.Group(); section.name = 'Lazy River'; batches = new Map();
+  const riverRoom = { name:'Lazy River', x0:200, x1:248, z0:40, z1:102, h:6 };
+  sections.push({ root:section, room:riverRoom });
+  river = createLazyRiver({geometry,box,material,sign,section,walls,owned,createWater,waterMeshes,textures,ivory,floor,poolMaterial,brass,glow,shade});
+  finish();
   // Close the former procedural exits; the east arcade is the Pavilion's sole onward route.
   section = new THREE.Group(); section.name='Pavilion perimeter'; batches=new Map();
-  box(-24,8,12,0.6,16,72,ivory,true);
-  for(const z of [-24,48]) box(12,8,z,72,16,0.6,ivory,true);
-  for(const [z,d] of [[-8,32],[32,32]]) box(48,8,z,0.6,16,d,ivory,true);
+  const {x0,x1,z0,z1,height} = PAVILION;
+  box(x0,height/2,(z0+z1)/2,0.6,height,z1-z0,ivory,true);
+  for(const z of [z0,z1]) box((x0+x1)/2,height/2,z,x1-x0,height,0.6,ivory,true);
+  for(const [a,b] of [[z0,8],[16,z1]]) box(x1,height/2,(a+b)/2,0.6,height,b-a,ivory,true);
   finish();
   function bridge(x,z) { return x>=243 && x<=301 && Math.abs(z-12)<1.8; }
   function terrain(x,z) {
-    for(const stair of stairs) {
-      if(x>=stair.x-1.5 && x<=stair.x+1.5 && z>=stair.top && z<stair.z) return {floor:stair.elevation+Math.min(stair.height,Math.ceil((stair.z-z)/0.625)*0.25),water:NaN};
-      if(x>=stair.x-3 && x<=stair.x+1.5 && z>=stair.top-3 && z<stair.top) return {floor:stair.elevation+stair.height,water:NaN};
-    }
+    const riverTerrain = river?.terrain(x,z);
+    if (riverTerrain) return riverTerrain;
     if (x>=400 && x<LEDGE.x0 && Math.abs(z-PIER_CENTER_Z)<=4) return {floor:6+Math.min(4,Math.floor(x-400)+1)*0.25,water:NaN};
     if (x>=LEDGE.x0 && x<=LEDGE.x1 && z>=LEDGE.z0 && z<=LEDGE.z1) return {floor:LEDGE.floor,water:NaN};
     if(x>=308 && x<336) return {floor:Math.min(6,(Math.floor((x-308)/(28/24))+1)*0.25),water:NaN};
@@ -469,8 +560,9 @@ export function createJourney({ group, textures, createWater, poolMaterial }) {
   }
   for (const mat of owned) if (mat.isMeshStandardMaterial && mat.map === textures.wall) addWallCaustics(mat, pools, poolMaterial.userData.causticTime);
   return {
-    root, walls, waterMeshes, terrain, pools, rainSources, pier: LEDGE,
+    root, walls, waterMeshes, terrain, pools, rainSources, pier: LEDGE, river, interactions,
     roomAt(x,z) {
+      if (river.contains(x,z)) return riverRoom;
       if (x>=LEDGE.x0 && x<=LEDGE.x1 && z>=LEDGE.z0 && z<=LEDGE.z1) return ROOMS.find(r=>r.name==='Sky Pool');
       return ROOMS.find(r=>x>=r.x0 && x<r.x1 && z>=r.z0 && z<=r.z1) || null; },
     restAvailable(x,z,y) { return Math.hypot(x-REST_SPOT.x,z-REST_SPOT.z)<3 && Math.abs(y-REST_SPOT.y)<1; },
@@ -488,6 +580,7 @@ export function createJourney({ group, textures, createWater, poolMaterial }) {
       streaks.offset.y=t*0.6;
       for(const effect of waterEffects) effect.update(t);
       for(const toys of beachBalls) if(toys.root.visible) toys.balls.update(t,dt,camera,onBallContact);
+      for(const animate of animations) animate(t,dt);
     },
     dispose() { owned.forEach(o=>o.dispose()); waterMeshes.forEach(w=>w.material.dispose()); root.removeFromParent(); },
   };

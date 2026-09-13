@@ -3,7 +3,7 @@ import { createSoundscape } from './acoustics.js';
 import { OCEAN_WAVES } from './ocean.js';
 import { RAIN_PATTERN } from './water-effects.js';
 import * as THREE from 'three';
-import { createLandmark, inLandmark, landmarkTerrain } from './landmark.js';
+import { createLandmark, inLandmark, landmarkTerrain, PAVILION } from './landmark.js';
 import { createJourney } from './journey.js';
 import { util } from './util.js';
 import { CONST } from './util.js';
@@ -39,7 +39,7 @@ import { CONST } from './util.js';
   const LEVEL_HI = 0.85;
 
   /** Ceiling height (relative to baseY) per room type. */
-  const CEILING = { pavilion: 16, dry: 4.2, shallow: 4.6, deep: 5.2, corridor: 3.0, stairwell: 5.0, atrium: 9.0 };
+  const CEILING = { pavilion: PAVILION.height, dry: 4.2, shallow: 4.6, deep: 5.2, corridor: 3.0, stairwell: 5.0, atrium: 9.0 };
 
   /** Door directions: the neighbour offset and the axis of the shared edge. */
   const DIRS = {
@@ -566,11 +566,33 @@ import { CONST } from './util.js';
       uniform sampler2D uNormalMap;
       uniform vec3 uCameraPos;
       uniform vec3 uWaterLight;
-      uniform vec4 uLandBounds;
+      #if LAND_BOUNDS_COUNT > 0
+      uniform vec4 uLandBounds[LAND_BOUNDS_COUNT];
+      #endif
+      #if LAND_ARC_COUNT > 0
+      uniform vec4 uLandArcs[LAND_ARC_COUNT];
+      uniform vec2 uLandArcAngles[LAND_ARC_COUNT];
+      #endif
       varying vec3 vWorld;
       ${OCEAN_WAVES}
       void main() {
-        if (vWorld.x > uLandBounds.x && vWorld.x < uLandBounds.z && vWorld.z > uLandBounds.y && vWorld.z < uLandBounds.w) discard;
+        #if LAND_BOUNDS_COUNT > 0
+        for (int i = 0; i < LAND_BOUNDS_COUNT; i++) {
+          vec4 bounds = uLandBounds[i];
+          if (vWorld.x > bounds.x && vWorld.x < bounds.z && vWorld.z > bounds.y && vWorld.z < bounds.w) discard;
+        }
+        #endif
+        #if LAND_ARC_COUNT > 0
+        for (int i = 0; i < LAND_ARC_COUNT; i++) {
+          vec4 arc = uLandArcs[i];
+          vec2 delta = vWorld.xz - arc.xy;
+          float radius = length(delta);
+          if (radius >= arc.z && radius <= arc.w) {
+            float angle = atan(delta.y, delta.x);
+            if (angle >= uLandArcAngles[i].x && angle <= uLandArcAngles[i].y) discard;
+          }
+        }
+        #endif
         float distanceToEye = length(uCameraPos.xz - vWorld.xz);
         vec3 waves = oceanSurface(vWorld.xz, uTime);
         vec2 drift = vec2(sin(vWorld.x * 0.12 + vWorld.z * 0.07), cos(vWorld.z * 0.1 - vWorld.x * 0.06)) * 0.35;
@@ -721,7 +743,7 @@ import { CONST } from './util.js';
      * Creates a pool or open-ocean surface covering world rect [x0,x1]x[z0,z1] at height y.
      * @param {number} depth  water depth, drives the shallow/deep colour mix
      */
-    function createWater(x0, z0, x1, z1, y, depth, { ocean = false, landBounds = [0,0,0,0] } = {}) {
+    function createWater(x0, z0, x1, z1, y, depth, { ocean = false, landBounds = [], landArcs = [] } = {}) {
       const w = x1 - x0;
       const d = z1 - z0;
       const geo = new THREE.PlaneGeometry(w, d, ocean ? 112 : util.clamp(Math.round(w), 1, 32), ocean ? 128 : util.clamp(Math.round(d), 1, 32));
@@ -752,10 +774,14 @@ import { CONST } from './util.js';
       uniforms.uRippleHeights = { value: rippleHeights };
       uniforms.uRainSources = { value: Array.from({length:6},()=>new THREE.Vector2()) };
       uniforms.uWaterLight = { value: waterLight };
-      if (ocean) uniforms.uLandBounds = { value: new THREE.Vector4(...landBounds) };
+      if (ocean) {
+        uniforms.uLandBounds = { value: landBounds.map(bounds=>new THREE.Vector4(...bounds)) };
+        uniforms.uLandArcs = { value: landArcs.map(arc=>new THREE.Vector4(...arc.center,...arc.radii)) };
+        uniforms.uLandArcAngles = { value: landArcs.map(arc=>new THREE.Vector2(...arc.angles)) };
+      }
       const mat = new THREE.ShaderMaterial({
         uniforms,
-        defines: ocean ? { OCEAN: 1 } : {},
+        defines: ocean ? { OCEAN: 1, LAND_BOUNDS_COUNT: landBounds.length, LAND_ARC_COUNT: landArcs.length } : {},
         vertexShader: WATER_VERT,
         fragmentShader: ocean ? OCEAN_FRAG : WATER_FRAG,
         transparent: !ocean,
@@ -1230,12 +1256,12 @@ import { CONST } from './util.js';
       meshHeightfield(ctx.b, visibleFloor, grid.mat, ctx.ox, ctx.oz, true);
       if (info.type === 'pavilion') {
         for (let k = 0; k < CELLS; k++) {
-          if (info.cx < 1) {
+          if (inLandmark(info.cx + 1, info.cz)) {
             const x = ctx.ox + CHUNK, z = ctx.oz + k * CELL;
             const a = grid.floorY[k * CELLS + CELLS - 1], b = landmarkTerrain(x + CELL / 2, z + CELL / 2).floor;
             if (a >= 0 && b >= 0 && Math.abs(a - b) > 1e-5) ctx.b.addQuadX(x, z, z + CELL, Math.min(a, b), Math.max(a, b), 'pool', a > b);
           }
-          if (info.cz < 1) {
+          if (inLandmark(info.cx, info.cz + 1)) {
             const x = ctx.ox + k * CELL, z = ctx.oz + CHUNK;
             const a = grid.floorY[(CELLS - 1) * CELLS + k], b = landmarkTerrain(x + CELL / 2, z + CELL / 2).floor;
             if (a >= 0 && b >= 0 && Math.abs(a - b) > 1e-5) ctx.b.addQuadZ(z, x, x + CELL, Math.min(a, b), Math.max(a, b), 'pool', a > b);
@@ -1249,7 +1275,7 @@ import { CONST } from './util.js';
         if (info.type === 'pavilion') {
           const x = ctx.ox + ((i % CELLS) + 0.5) * CELL;
           const z = ctx.oz + (Math.floor(i / CELLS) + 0.5) * CELL;
-          if (Math.hypot(x - 6, z - 5) < 11 || Math.hypot(x - 28, z - 25) < 7 || Math.hypot(x + 12, z - 31) < 5) ceilHeights[i] = SOLID;
+          if (PAVILION.skylights.some(([sx, sz, radius]) => Math.hypot(x-sx, z-sz) < radius)) ceilHeights[i] = SOLID;
         }
       }
       meshHeightfield(ctx.b, ceilHeights, null, ctx.ox, ctx.oz, false);
@@ -1328,7 +1354,8 @@ import { CONST } from './util.js';
 
     const landmark = createLandmark({ group, textures, createWater, poolMaterial: materials.pool, ring });
     const journey = createJourney({ group, textures, createWater, poolMaterial: materials.pool });
-    const soundscape = createSoundscape({ pools: [...landmark.pools, ...journey.pools], rain: journey.rainSources, walls: [...landmark.walls, ...journey.walls], pier: journey.pier });
+    const soundscape = createSoundscape({ pools: [...landmark.pools, ...journey.pools], rain: journey.rainSources, walls: [...landmark.walls, ...journey.walls], pier: journey.pier, river: journey.river });
+    const interactions = [...landmark.interactions, ...journey.interactions];
     const chunks = new Map();
     let chunkVersion = 0;            // bumped whenever the loaded set changes (invalidates wallsNear cache)
     const wallsCache = { key: null, version: -1, list: [] };
@@ -1357,7 +1384,7 @@ import { CONST } from './util.js';
     function update(x) {
       const nearPavilion = x < 190;
       landmark.root.visible = nearPavilion;
-      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = PAVILION.z0 / CHUNK; dz < PAVILION.z1 / CHUNK; dz++) for (let dx = PAVILION.x0 / CHUNK; dx < PAVILION.x1 / CHUNK; dx++) {
         const chunk = ensureChunk(dx, dz);
         chunk.group.visible = nearPavilion;
       }
@@ -1474,8 +1501,8 @@ import { CONST } from './util.js';
 
     /** Spawn point: raised arrival terrace overlooking the lagoon and slide. */
     function spawn() {
-      const x = 7, z = 28;
-      return { x, y: floorAt(x, z), z, yaw: -0.18 };
+      const [x, y, z, yaw] = PAVILION.spawn;
+      return { x, y, z, yaw };
     }
 
     /** Restores a dimmed panel or, rarely, dims a random one for 0.1-0.4 s. */
@@ -1617,6 +1644,8 @@ import { CONST } from './util.js';
       ensureChunk,
       setRing,
       soundscape,
+      currentAt(x, z) { return journey.river.currentAt(x,z); },
+      interactions,
       floorAt,
       ceilingAt,
       waterAt,

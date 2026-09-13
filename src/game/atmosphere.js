@@ -2,7 +2,7 @@ import * as THREE from 'three';
 
 // Lighting and arrival copy share the same room identities as the designed walk.
 export const ATMOSPHERES = {
-  'Sun Pavilion': { caption: 'A little further from the everyday.', fog: 0xdde7dd, sky: 0xfff0d3, ground: 0x659b9e, sun: 0xffe2b4, fill: 1.15, direct: 1.85, exposure: 1.08, haze: 1 },
+  'Sun Pavilion': { caption: 'A little further from the everyday.', fog: 0xdde7dd, sky: 0xfff0d3, ground: 0x527e83, sun: 0xffe2b4, fill: 0.86, direct: 2.2, exposure: 1.06, haze: 1 },
   'Blue Arcade': { caption: 'Follow the rhythm of the arches.', fog: 0xb8d4da, sky: 0xd4eaf3, ground: 0x457e8d, sun: 0xe6f4ff, fill: 0.95, direct: 1.35, exposure: 1.04, haze: 0.88 },
   'Water passage': { caption: 'Rain, somewhere ahead.', fog: 0xc2d8d6, sky: 0xdcebe8, ground: 0x527b7e, sun: 0xd6e7e4, fill: 0.8, direct: 0.9, exposure: 1, haze: 0.85 },
   'Rain Hall': { caption: 'Stay a moment. Listen to the water.', fog: 0xb8ceca, sky: 0xdae8e4, ground: 0x507d7d, sun: 0xe6f3ed, fill: 0.85, direct: 1.1, exposure: 1.02, haze: 0.78 },
@@ -14,6 +14,9 @@ export const ATMOSPHERES = {
   'Sky Pool': { caption: 'There is nowhere else you need to be.', fog: 0xdce9e5, sky: 0xfff1da, ground: 0x749fa6, sun: 0xffdfaa, fill: 1.25, direct: 2, exposure: 1.08, haze: 1.15 },
   'Changing Gallery': { caption: 'Leave the outside world at the door.', fog: 0xc9dbcf, sky: 0xe6eee0, ground: 0x628981, sun: 0xffe9cb, fill: 0.9, direct: 1.05, exposure: 1.03, haze: 0.9 },
   'Lantern Baths': { caption: 'A pool of warmth, tucked away.', fog: 0xd9bc9f, sky: 0xffdfb4, ground: 0x8a6b68, sun: 0xffc481, fill: 0.68, direct: 0.85, exposure: 1.04, haze: 0.88 },
+  'Rain Garden': { caption: 'A garden behind the rain.', fog: 0xbdd5bd, sky: 0xeaf1ce, ground: 0x4d7966, sun: 0xffdfab, fill:0.7, direct:1.3, exposure:1.04, haze:0.88 },
+  'Stillwater Nook': { caption: 'Let the river go on without you.', fog:0xd9c5a8, sky:0xffe3bc, ground:0x776657, sun:0xffc993, fill:0.55, direct:0.8, exposure:1.02, haze:0.84 },
+  'Lazy River': { caption: 'Step into the current. Let it carry you.', fog:0xc2d8cf, sky:0xe7f3df, ground:0x507d78, sun:0xffe4b9, fill:0.68, direct:1.2, exposure:1.03, haze:0.9 },
 };
 
 const profiles = Object.fromEntries(Object.entries(ATMOSPHERES).map(([name, p]) => [name, {
@@ -25,15 +28,15 @@ export function createAtmosphere({ hemisphere, sun, renderer, skyColor }) {
   let haze = 1;
   return {
     // Exponential blending stays smooth across doorways at any frame rate.
-    update(room, dt, immediate = false) {
+    update(room, dt, immediate = false, lightScale = 1) {
       const p = profiles[room] || profiles['Sun Pavilion'];
       const blend = immediate ? 1 : 1 - Math.exp(-dt * 0.8);
       hemisphere.color.lerp(p.sky, blend);
       hemisphere.groundColor.lerp(p.ground, blend);
       sun.color.lerp(p.sun, blend);
       skyColor.lerp(p.fog, blend);
-      hemisphere.intensity += (p.fill - hemisphere.intensity) * blend;
-      sun.intensity += (p.direct - sun.intensity) * blend;
+      hemisphere.intensity += (p.fill * lightScale - hemisphere.intensity) * blend;
+      sun.intensity += (p.direct * lightScale - sun.intensity) * blend;
       renderer.toneMappingExposure += (p.exposure - renderer.toneMappingExposure) * blend;
       haze += (p.haze - haze) * blend;
       return haze;

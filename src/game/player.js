@@ -7,8 +7,7 @@ import { CONST } from './util.js';
   // Tuning values not covered by CONST (CONTRACT §8).
   const ACCEL_GROUND = 40;      // units/s² toward the wish velocity while on the ground
   const ACCEL_AIR = 8;          // ... while airborne
-  const SWIM_ACCEL = 10;        // horizontal acceleration while swimming
-  const SWIM_DRAG = 3;          // per-second velocity drag while swimming (all axes)
+  const SWIM_DRAG = 3;          // vertical damping for buoyancy and diving
   const SWIM_VERT_ACCEL = 12;   // jump/down vertical acceleration while swimming
   const SWIM_VERT_MAX = 2.2;    // cap for the controlled vertical swim speed
   const SWIM_VY_MAX = 2.5;      // cap for the total vertical swim speed
@@ -24,6 +23,7 @@ import { CONST } from './util.js';
   const STRIDE_WALK = 2.1;      // distance between footstep sounds when walking
   const STRIDE_SPRINT = 2.6;    // ... when sprinting
   const STRIDE_WADE = 1.6;      // ... when wading (splash sounds)
+  const STRIDE_SWIM = 1.35;     // distance through water between quiet swimming strokes
   const EYE_SWIM = 1.35;        // eye height above the feet while swimming
   const EYE_BLEND_TIME = 0.2;   // seconds for the standing <-> swimming eye height transition
   const BOB_AMP = 0.03;         // head bob amplitude (units) on the ground
@@ -72,6 +72,7 @@ import { CONST } from './util.js';
     let coyote = COYOTE_TIME;      // time since the feet last touched the ground
     let wetFeet = 0, dripTimer = 0;
     let stride = 0;                // horizontal distance walked since the last footstep sound
+    let swimStride = 0;            // distance actively swum since the last stroke sound
     let eyeH = C.EYE_HEIGHT;       // current eye height above the feet (blends toward EYE_SWIM when swimming)
     let prevEyeH = C.EYE_HEIGHT;
     let reducedMotion = false;
@@ -169,7 +170,8 @@ import { CONST } from './util.js';
       let f = world.floorAt(nx, nz);
       for (let k = 0; k < walls.length; k++) {
         const w = walls[k];
-        if (w.y1 > f && w.y1 <= feetY + stepLimit && nx > w.x0 && nx < w.x1 && nz > w.z0 && nz < w.z1) f = w.y1;
+        // Include shared tread edges, allowing for rounding in their box coordinates.
+        if (w.y1 > f && w.y1 <= feetY + stepLimit && nx >= w.x0 - PUSH_EPS && nx <= w.x1 + PUSH_EPS && nz >= w.z0 - PUSH_EPS && nz <= w.z1 + PUSH_EPS) f = w.y1;
       }
       // A floor far above the feet means the point is inside solid geometry: never catapult the player.
       return f > feetY + MAX_FLOOR_RISE ? feetY : f;
@@ -194,7 +196,7 @@ import { CONST } from './util.js';
       yaw = Number(newYaw) || 0;
       pitch = 0;
       coyote = COYOTE_TIME;
-      stride = 0; wetFeet = 0; dripTimer = 0;
+      stride = 0; swimStride = 0; wetFeet = 0; dripTimer = 0;
       eyeH = C.EYE_HEIGHT;
       prevEyeH = C.EYE_HEIGHT;
       bobPhase = 0;
@@ -240,6 +242,7 @@ import { CONST } from './util.js';
       const ride = world.stepRide?.(position, velocity, dt);
       if (ride) {
         input.consumeJump();
+        swimStride = 0;
         // Input owns the view while the ride owns position; looking never steers the flume.
         stepOffset *= Math.exp(-STEP_CAMERA_RATE * dt);
         state.onGround = false;
@@ -279,8 +282,8 @@ import { CONST } from './util.js';
 
       // 3. Velocity update.
       let jumped = false;
+      const maxSpeed = sprint ? C.SPRINT_SPEED : C.WALK_SPEED;
       if (!swimming) {
-        const maxSpeed = (sprint ? C.SPRINT_SPEED : C.WALK_SPEED) * (wading ? C.WADE_FACTOR : 1);
         const accel = (state.onGround ? ACCEL_GROUND : ACCEL_AIR) * dt;
         velocity.x += clamp(wish.x * maxSpeed - velocity.x, -accel, accel);
         velocity.z += clamp(wish.z * maxSpeed - velocity.z, -accel, accel);
@@ -292,11 +295,11 @@ import { CONST } from './util.js';
           audio.jump();
         }
       } else {
-        const swimSpeed = sprint ? C.SWIM_SPRINT_SPEED : C.SWIM_SPEED;
-        const accel = SWIM_ACCEL * dt;
-        velocity.x += clamp(wish.x * swimSpeed - velocity.x, -accel, accel);
-        velocity.z += clamp(wish.z * swimSpeed - velocity.z, -accel, accel);
-        velocity.multiplyScalar(Math.max(0, 1 - SWIM_DRAG * dt));
+        const accel = ACCEL_GROUND * dt;
+        const current = world.currentAt?.(x,z);
+        velocity.x += clamp(wish.x * maxSpeed + (current?.x || 0) - velocity.x, -accel, accel);
+        velocity.z += clamp(wish.z * maxSpeed + (current?.z || 0) - velocity.z, -accel, accel);
+        velocity.y *= Math.max(0, 1 - SWIM_DRAG * dt);
         velocity.y -= SWIM_GRAVITY * dt;
         if (inp.jumpHeld) {
           velocity.y = Math.min(velocity.y + SWIM_VERT_ACCEL * dt, SWIM_VERT_MAX);
@@ -308,7 +311,7 @@ import { CONST } from './util.js';
         }
         // Look-based diving: with rotation.x = pitch the view direction's y component is sin(pitch),
         // so swimming forward while looking down (pitch < 0) pushes the player under.
-        if (mz > 0) velocity.y += Math.sin(pitch) * mz * swimSpeed * DIVE_GAIN * dt;
+        if (mz > 0) velocity.y += Math.sin(pitch) * mz * maxSpeed * DIVE_GAIN * dt;
         velocity.y = clamp(velocity.y, -SWIM_VY_MAX, SWIM_VY_MAX);
         // Surfacing stops just below the depth where swimming ends, so the mode cannot flip-flop there.
         const feetCap = waterY - C.SWIM_DEPTH - 0.01;
@@ -341,7 +344,14 @@ import { CONST } from './util.js';
         velocity.y = 0;
         onGround = true;
       }
-      const c = world.ceilingAt(nx, nz);
+      let c = world.ceilingAt(nx, nz);
+      // Elevated slabs also have solid undersides: jumping below a tread cannot pass through it.
+      for (const w of walls) {
+        if (feetY + H <= w.y0 + PUSH_EPS &&
+            (nx - clamp(nx, w.x0, w.x1)) ** 2 + (nz - clamp(nz, w.z0, w.z1)) ** 2 < R * R) {
+          c = Math.min(c, w.y0);
+        }
+      }
       if (ny + H > c) {
         ny = c - H;
         velocity.y = Math.min(velocity.y, 0);
@@ -373,6 +383,18 @@ import { CONST } from './util.js';
           if (inWater) audio.splash(sprint ? 0.35 : 0.2);
           else audio.footstep(sprint ? 1.2 : 1, wetFeet > 0 ? 'wet' : 'dry');
         }
+      }
+      // Include diving and surfacing, but leave idle floating and passive river travel quiet.
+      if (swimming && (moving || inp.jumpHeld || inp.downHeld)) {
+        swimStride += Math.hypot(moved, ny - feetY);
+        // Keep a relaxed stroke cadence at the faster travel pace, including vertical strokes.
+        const strokeLength = Math.max(STRIDE_SWIM, moved / dt * (sprint ? 0.48 : 0.65));
+        if (swimStride >= strokeLength) {
+          swimStride %= strokeLength;
+          audio.swimStroke(sprint ? 1.15 : 1);
+        }
+      } else {
+        swimStride = 0;
       }
 
       // 8. Commit position and state.

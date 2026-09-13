@@ -20,9 +20,6 @@
     JUMP_SPEED: 6,
     WALK_SPEED: 3.4,
     SPRINT_SPEED: 5.8,
-    SWIM_SPEED: 2.0,
-    SWIM_SPRINT_SPEED: 3.0,
-    WADE_FACTOR: 0.6,
     FIXED_DT: 1 / 60,
     MAX_STEPS: 5,
   };

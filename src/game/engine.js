@@ -12,6 +12,7 @@ import { createWorld } from './world.js';
 import { createAtmosphere } from './atmosphere.js';
 import { REST_SPOT } from './journey.js';
 import { createPlayer } from './player.js';
+import { CHECKPOINTS, DISCOVERIES, PROGRESS_KEY, freshProgress, readProgress } from './progress.js';
 const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
 /* engine.js — boot, renderer, scene, post-processing, fixed-timestep loop, state machine and module wiring. */
 
@@ -206,6 +207,9 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
     const mode = 'wander';
     settings.mode = mode;
     const depth = 0;
+    let savedWalk = readProgress(util.storageGet(PROGRESS_KEY, null), seed);
+    let progress = savedWalk || freshProgress(seed);
+    let saveWarningShown = false;
 
     // --- runtime state ---------------------------------------------------------------------------
     let disposed = false;
@@ -236,6 +240,7 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
     let activeRest = null;
     let lastRoom = '';
     let roomHaze = 1;
+    let restYaw = 0, restPitch = -0.04, restLookStarted = false, interactionTime = -Infinity, seatPointer = null;
     const restEye = new THREE.Vector3(REST_SPOT.x, REST_SPOT.y + 1.25, REST_SPOT.z);
     const restView = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.04, REST_SPOT.yaw, 0, 'YXZ'));
 
@@ -291,6 +296,7 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
       joystickBase: byId('joystick'),
       joystickKnob: byId('joystick-knob'),
       jumpButton: byId('btn-jump'),
+      diveButton: byId('btn-dive'),
       sprintIndicator: byId('sprint-indicator'),
       onPauseRequest: pause,
       onFirstGesture: function () {
@@ -305,6 +311,10 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
       onSettingsChange,
       onCopyLink,
       onRest: toggleRest,
+      onContinue: () => onStart({ seed, continue: true }),
+      onInteract: interact,
+      onRevisit: revisit,
+      onHideSeatUI: () => { ui.patch({ seatHidden: true }); ui.toast('Press H or tap the view to show controls', 2200); },
     });
     ui.onAnyClick = function () {
       audio.uiClick();
@@ -357,6 +367,7 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
       player.teleport(spawn.x, spawn.y, spawn.z, spawn.yaw);
       player.updateCamera(1);
       world.setTime(time);
+      for (const item of world.interactions) item.set(progress.interactions[item.id] === true);
       shadowChunkCount = -1; // sentinel: the next shadow-flag pass runs regardless of the chunk count
       if (shadowsOn) refreshShadowFlags(0);
     }
@@ -532,7 +543,8 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
     function applyInputMode() {
       inputMode = settings.inputMode === 'auto' ? (deviceTouch ? 'touch' : 'desktop') : settings.inputMode;
       input.setMode(inputMode);
-      ui.setTouchControlsVisible(inputMode === 'touch' && state === 'playing');
+      ui.patch({ touch: inputMode === 'touch' });
+      ui.setTouchControlsVisible(inputMode === 'touch' && state === 'playing' && !resting);
     }
 
     // --- viewport --------------------------------------------------------------------------------
@@ -594,9 +606,66 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
         ui.patch({ area: name });
         if (state === 'playing') ui.announceArea(name);
       }
+      if (state === 'playing' && Object.hasOwn(CHECKPOINTS,name) && progress.room !== name) {
+        progress.room=name;
+        if (!progress.visited.includes(name)) progress.visited.push(name);
+        saveProgress();
+      }
+      if (state === 'playing' && p) {
+        const discovery = name==='Rain Garden'?'rain-garden':name==='Stillwater Nook'?'stillwater-nook':
+          name==='Column Sea' && p.y < -2.7 && Math.hypot(p.x-287,p.z-48)<4?'sun-mosaic':null;
+        if(discovery && !progress.discoveries.includes(discovery)) {
+          progress.discoveries.push(discovery); saveProgress(); ui.toast(DISCOVERIES[discovery],4000);
+        }
+      }
       const spot = p && world.journey.restSpotAt(p.x, p.z, p.y);
       const canRest = !!spot, restPrompt = spot?.ending ? 'Rest' : 'Sit for a while';
       if (ui.getSnapshot().canRest !== canRest || ui.getSnapshot().restPrompt !== restPrompt) ui.patch({ canRest, restPrompt });
+      const item = nearbyInteraction();
+      const interactionLabel = item?.label || '';
+      if (ui.getSnapshot().interactionLabel !== interactionLabel) ui.patch({ interactionLabel });
+    }
+
+    function saveProgress() {
+      if (!util.storageSet(PROGRESS_KEY,progress) && !saveWarningShown) {
+        saveWarningShown=true; ui.toast('This browser cannot save your walk. You can keep exploring.',4500);
+      }
+      ui.patch({ visited:[...progress.visited], discoveries:progress.discoveries.map(id=>DISCOVERIES[id]), completed:progress.completed });
+    }
+
+    function nearbyInteraction() {
+      if (!player || !world || resting || state !== 'playing') return null;
+      const p=player.position, room=world.journey.roomAt(p.x,p.z)?.name || 'Sun Pavilion';
+      return world.interactions.find(item=>item.room===room && Math.hypot(item.x-p.x,item.z-p.z)<3.1 && Math.abs(item.y-p.y-1.4)<1.8 &&
+        !world.soundscape.occluded({x:p.x,y:p.y+1.4,z:p.z},item)) || null;
+    }
+
+    function interact() {
+      const item=nearbyInteraction(), now=performance.now();
+      if(!item || item.sound && now-interactionTime<450) return;
+      if(item.sound) interactionTime=now;
+      item.set(!item.value);
+      progress.interactions[item.id]=item.value;
+      if(item.sound) audio.resonate(item);
+      else audio.waterDrip();
+      if(item.id==='locker' && item.value) ui.toast('A little sun, waiting for someone.',3500);
+      saveProgress(); updateHUD();
+    }
+
+    function moveToCheckpoint(name) {
+      const point=CHECKPOINTS[name];
+      if(!point) return;
+      resting=false; activeRest=null; input.setLookOnly(false);
+      ui.patch({resting:false,restEnding:false,seatHidden:false,canRest:false});
+      player.teleport(...point); player.updateCamera(1);
+      underwater=false; audio.setUnderwater(false); vignette?.classList.remove('underwater'); waterEffects.reset();
+      roomHaze=atmosphere.update(name,0,true); applyFog(); world.update(point[0],point[2]);
+      progress.room=name; lastRoom=''; acc=0;
+    }
+
+    function revisit(name) {
+      if(state!=='paused' || !progress.completed || !progress.visited.includes(name) || !Object.hasOwn(CHECKPOINTS,name)) return;
+      moveToCheckpoint(name); saveProgress(); enterPlaying(); updateHUD();
     }
 
     function toggleRest() {
@@ -608,16 +677,18 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
         player.velocity.set(0,0,0);
         player.state.speed = 0;
         restEye.set(activeRest.x,activeRest.y+(activeRest.ending?1.25:1.55),activeRest.z);
-        restView.setFromEuler(new THREE.Euler(-0.04,activeRest.yaw,0,'YXZ'));
+        restYaw=activeRest.yaw; restPitch=-0.04; restLookStarted=false;
+        restView.setFromEuler(new THREE.Euler(restPitch,restYaw,0,'YXZ'));
       } else activeRest = null;
       resting = !resting;
       acc = 0;
-      input.setEnabled(!resting);
+      input.setLookOnly(resting);
+      input.setEnabled(true);
       ui.setTouchControlsVisible(!resting && inputMode === 'touch');
-      ui.patch({ resting, restEnding: !!activeRest?.ending, restCaption: activeRest?.caption || '' });
+      ui.patch({ resting, restEnding: !!activeRest?.ending, restCaption: activeRest?.caption || '', seatHidden:false });
       if (resting) {
         if (input.isPointerLocked()) input.exitPointerLock();
-        if (activeRest.ending) util.storageSet('poolrooms.completed', true);
+        if (activeRest.ending) { util.storageSet('poolrooms.completed', true); progress.completed=true; saveProgress(); }
       } else {
         player.updateCamera(1);
         enterPlaying();
@@ -626,8 +697,17 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
 
     function onRestKey(event) {
       if (event.code === 'Escape' && resting) pause();
-      if (event.code === 'KeyE' && !event.repeat && state === 'playing' &&
-          !['INPUT', 'SELECT', 'TEXTAREA'].includes(event.target?.tagName)) toggleRest();
+      if(event.repeat || state!=='playing' || ['INPUT','SELECT','TEXTAREA'].includes(event.target?.tagName)) return;
+      if(event.code==='KeyH' && resting) ui.patch({seatHidden:!ui.getSnapshot().seatHidden});
+      if(event.code==='KeyE') { if(!resting && nearbyInteraction()) interact(); else toggleRest(); }
+    }
+
+    function onSeatPointerDown(event) {
+      seatPointer=resting && ui.getSnapshot().seatHidden ? {x:event.clientX,y:event.clientY,id:event.pointerId} : null;
+    }
+    function onSeatPointerUp(event) {
+      if(seatPointer?.id===event.pointerId && Math.hypot(event.clientX-seatPointer.x,event.clientY-seatPointer.y)<8) ui.patch({seatHidden:false});
+      seatPointer=null;
     }
 
     /**
@@ -703,7 +783,8 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
       state = 'playing';
       ui.hideMenus();
       ui.setTouchControlsVisible(!resting && inputMode === 'touch');
-      input.setEnabled(!resting);
+      input.setLookOnly(resting);
+      input.setEnabled(true);
       audio.setPaused(false);
       acc = 0;
       if (inputMode === 'desktop' && !resting) {
@@ -753,6 +834,8 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
     function onStart(opts) {
       if (state !== 'start') return;
       const requestedSeed = sanitizeSeed(opts && opts.seed) || util.randomSeedString();
+      const continuing=opts?.continue && savedWalk?.seed===requestedSeed;
+      progress=continuing?savedWalk:freshProgress(requestedSeed);
       audio.unlock();
       audio.start();
       audio.setVolume(settings.volume);
@@ -772,10 +855,15 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
           return;
         }
       }
+      for(const item of world.interactions) item.set(progress.interactions[item.id]===true);
+      if(continuing) moveToCheckpoint(progress.room);
+      else moveToCheckpoint('Sun Pavilion');
+      savedWalk=null;
       syncHash();
       updateHUD();
       loopWanted = true;
       enterPlaying();
+      saveProgress(); updateHUD();
       ui.announceArea(lastRoom || 'Sun Pavilion');
     }
 
@@ -787,6 +875,8 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
     function pause() {
       if (state !== 'playing') return;
       state = 'paused';
+      ui.patch({seatHidden:false});
+      saveProgress();
       input.setEnabled(false);
       if (input.isPointerLocked()) input.exitPointerLock();
       audio.setPaused(true);
@@ -804,11 +894,13 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
     /** Restart the walk at the Pavilion, retaining the current settings. */
     function onNewSeed() {
       seed = util.randomSeedString();
+      progress=freshProgress(seed); savedWalk=null; input.setLookOnly(false);
       resting = false;
       activeRest = null;
-      ui.patch({ resting: false, restEnding: false, canRest: false });
+      ui.patch({ resting: false, restEnding: false, canRest: false, seatHidden:false });
       buildWorld();
       syncHash();
+      saveProgress();
       updateHUD();
       ui.toast('Back at the Sun Pavilion', 2500);
       if (state === 'paused') {
@@ -884,6 +976,11 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
       // Resting keeps the scene alive while holding movement and settling the camera.
       const look = input.consumeLook();
       if (!resting) player.applyLook(look.dx, look.dy);
+      else {
+        if(look.dx || look.dy) restLookStarted=true;
+        restYaw-=look.dx; restPitch=util.clamp(restPitch-look.dy,-1.35,1.35);
+        restView.setFromEuler(new THREE.Euler(restPitch,restYaw,0,'YXZ'));
+      }
       if (!resting) acc += dt;
       let steps = 0;
       while (acc >= C.FIXED_DT && steps < C.MAX_STEPS) {
@@ -897,13 +994,14 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
       const pos = player.position;
       const roomName = world.journey.roomAt(pos.x,pos.z)?.name;
       // Lighting follows real elapsed time when slow frames exceed the bounded physics timestep.
-      roomHaze = atmosphere.update(roomName, elapsed);
+      roomHaze = atmosphere.update(roomName, elapsed, false, roomName==='Lantern Baths' && progress.interactions.lanterns ? 0.65 : 1);
       applyFog();
       world.update(pos.x, pos.z, 2);
       if (resting) {
         const settle = settings.reducedMotion ? 1 : 1 - Math.exp(-dt * 1.6);
         camera.position.lerp(restEye, settle);
-        camera.quaternion.slerp(restView, settle);
+        if(restLookStarted) camera.quaternion.copy(restView);
+        else camera.quaternion.slerp(restView, settle);
       } else player.updateCamera(alpha);
       updateUnderwater();
       waterEffects.update(dt, world.waterAt(camera.position.x,camera.position.z), underwater, settings.reducedMotion, renderer.getPixelRatio());
@@ -928,8 +1026,8 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
       audioState.position = camera.position;
       audioState.time = time;
       audioState.ending = resting && !!activeRest?.ending;
-      audioState.pitch = resting ? -0.04 : player.pitch;
-      audioState.yaw = resting ? activeRest.yaw : player.yaw;
+      audioState.pitch = resting ? restPitch : player.pitch;
+      audioState.yaw = resting ? restYaw : player.yaw;
       audio.update(dt, audioState);
 
       if (shadowsOn && dirLight) followLight(pos);
@@ -1005,6 +1103,7 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
     ui.setTouchControlsVisible(false);
     updateHUD();
     ui.showStart({ seed, mode, touch: inputMode === 'touch' });
+    ui.patch({canContinue:!!savedWalk,continueRoom:savedWalk?.room || '',visited:[...progress.visited],discoveries:progress.discoveries.map(id=>DISCOVERIES[id]),completed:progress.completed});
 
     document.addEventListener('visibilitychange', onVisibilityChange);
     document.addEventListener('keydown', onRestKey);
@@ -1014,6 +1113,8 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
     app.addEventListener('pointerdown', onAppPointerDown);
     canvas.addEventListener('webglcontextlost', onContextLost);
     canvas.addEventListener('webglcontextrestored', onContextRestored);
+    canvas.addEventListener('pointerdown',onSeatPointerDown);
+    canvas.addEventListener('pointerup',onSeatPointerUp);
 
     const bootFrame = requestAnimationFrame(finishBoot); // world + backdrop behind the overlay; the loop itself waits for Start
 
@@ -1044,6 +1145,8 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
         app.removeEventListener('pointerdown', onAppPointerDown);
         canvas.removeEventListener('webglcontextlost', onContextLost);
         canvas.removeEventListener('webglcontextrestored', onContextRestored);
+        canvas.removeEventListener('pointerdown',onSeatPointerDown);
+        canvas.removeEventListener('pointerup',onSeatPointerUp);
         input.dispose();
         audio.dispose();
         waterEffects.dispose();

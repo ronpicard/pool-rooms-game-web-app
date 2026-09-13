@@ -1,9 +1,10 @@
 import { sampleOceanHeight } from './ocean.js';
 
 // Geometry supplies the pool edges, waterfall impacts, pier and collision walls.
-export function createSoundscape({ pools, rain, walls, pier }) {
+export function createSoundscape({ pools, rain, walls, pier, river }) {
   return {
     rain,
+    river,
     oceanHeight: sampleOceanHeight,
     pierProgress(position) { return Math.max(0, Math.min(1, (position.x - pier.x0) / (pier.x1 - pier.x0))); },
     nearestWater(position) {
@@ -24,6 +25,10 @@ export function createSoundscape({ pools, rain, walls, pier }) {
         }
         const distance = Math.hypot(position.x-x, position.y-y, position.z-z);
         if (distance < best) { best = distance; nearest = { x, y, z }; }
+      }
+      if (river) {
+        const water = river.nearestWater(position.x,position.z);
+        if (Math.hypot(position.x-water.x,position.y-water.y,position.z-water.z)<best) nearest=water;
       }
       return nearest;
     },
