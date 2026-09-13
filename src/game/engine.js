@@ -1,3 +1,4 @@
+import { createWaterEffects } from './water-effects.js';
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -8,6 +9,7 @@ import { textures as textureFactory } from './textures.js';
 import { createAudio } from './audio.js';
 import { createInput } from './input.js';
 import { createWorld } from './world.js';
+import { createAtmosphere } from './atmosphere.js';
 import { REST_SPOT } from './journey.js';
 import { createPlayer } from './player.js';
 const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
@@ -81,15 +83,17 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
   /**
    * Merges a stored or partial settings object over `defaults`, keeping only valid values.
    * @param {*} raw  candidate settings (localStorage content or a React settings payload)
-   * @param {{quality:string, inputMode:string, volume:number, invertY:boolean, mode:string}} defaults
-   * @returns {{quality:string, inputMode:string, volume:number, invertY:boolean, mode:string}}
+   * @param {{quality:string, inputMode:string, volume:number, invertY:boolean, reducedMotion:boolean, mode:string}} defaults
+   * @returns {{quality:string, inputMode:string, volume:number, invertY:boolean, reducedMotion:boolean, mode:string}}
    */
   function sanitizeSettings(raw, defaults) {
     const s = {
       quality: defaults.quality,
       inputMode: defaults.inputMode,
       volume: defaults.volume,
+      environmentVolume: defaults.environmentVolume, movementVolume: defaults.movementVolume, musicVolume: defaults.musicVolume, gentleSound: defaults.gentleSound,
       invertY: defaults.invertY,
+      reducedMotion: defaults.reducedMotion,
       mode: defaults.mode,
     };
     if (!raw || typeof raw !== 'object') return s;
@@ -100,6 +104,11 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
       // Accept both the 0..1 scale used internally and the 0..100 scale of a range input.
       s.volume = Math.min(1, Math.max(0, volume > 1 ? volume / 100 : volume));
     }
+    for (const key of ['environmentVolume', 'movementVolume', 'musicVolume']) {
+      if (typeof raw[key] === 'number' && Number.isFinite(raw[key])) s[key] = Math.max(0, Math.min(1, raw[key]));
+    }
+    if (typeof raw.gentleSound === 'boolean') s.gentleSound = raw.gentleSound;
+    if (typeof raw.reducedMotion === 'boolean') s.reducedMotion = raw.reducedMotion;
     if (typeof raw.invertY === 'boolean') s.invertY = raw.invertY;
     if (GAME_MODES.indexOf(raw.mode) !== -1) s.mode = raw.mode;
     return s;
@@ -154,9 +163,11 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
         size, unitsPerTexture: 4, tilesPerUnit: 2, baseColor: '#f4f2ec', variation: 0.04, groutColor: '#b7c2bc', seed: 37,
       }),
       ceiling: T.createPlasterTexture({ size: touch ? 256 : 512, baseColor: '#f7f7f4', noise: 0.03, seed: 41 }),
+      tileRelief: T.createTileTexture({ size: 512, relief: true }),
       waterNormal: T.createWaterNormalTexture({ size: 256, seed: 5, strength: 1.0 }),
       glow: T.createGlowTexture({ size: 128 }),
     };
+    textures.tileRelief.anisotropy = maxAnisotropy;
     textures.floor.anisotropy = maxAnisotropy;
     textures.pool.anisotropy = maxAnisotropy;
     textures.wall.anisotropy = maxAnisotropy;
@@ -184,7 +195,7 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
     const vignette = byId('vignette');
 
     // --- persistent state ------------------------------------------------------------------------
-    const defaults = { quality: deviceTouch ? 'low' : 'medium', inputMode: 'auto', volume: 0.8, invertY: false, mode: 'wander' };
+    const defaults = { quality: deviceTouch ? 'low' : 'medium', inputMode: 'auto', volume: 0.8, environmentVolume: 1, movementVolume: 0.8, musicVolume: 0, gentleSound: false, invertY: false, reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, mode: 'wander' };
     let settings = sanitizeSettings(util.storageGet(SETTINGS_KEY, null), defaults);
     // The URL hash wins; without a seed in it, resume the last run from storage (the hash cannot
     // always be written on file:// pages, so storage is what survives a reload there).
@@ -222,7 +233,9 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
     let fps = 0;
     let orientationTimer = 0;
     let resting = false;
+    let activeRest = null;
     let lastRoom = '';
+    let roomHaze = 1;
     const restEye = new THREE.Vector3(REST_SPOT.x, REST_SPOT.y + 1.25, REST_SPOT.z);
     const restView = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.04, REST_SPOT.yaw, 0, 'YXZ'));
 
@@ -249,6 +262,8 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
     const sun = new THREE.DirectionalLight(0xffefd5, 2.0);
     sun.position.set(-25, 45, 25);
     scene.add(sun);
+    const atmosphere = createAtmosphere({ hemisphere, sun, renderer, skyColor });
+    roomHaze = atmosphere.update('Sun Pavilion', 0, true);
     // A tiny sky dome follows the camera. Indoor walls naturally occlude it.
     const skyDome = new THREE.Mesh(new THREE.SphereGeometry(65, 24, 12), new THREE.ShaderMaterial({
       side: THREE.BackSide, depthWrite: false,
@@ -269,6 +284,7 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
 
     // --- modules ---------------------------------------------------------------------------------
     const audio = createAudio();
+    const waterEffects = createWaterEffects(scene, camera, byId('water-lens'));
     const input = createInput({
       canvas,
       touchLayer: byId('touch-layer'),
@@ -317,17 +333,27 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
         ring,
         textures,
         maxAnisotropy,
+        onBallContact: audio.ballContact,
         mode,
       });
       world.setCamera(camera);
+      audio.setScene(world.soundscape);
       world.setFog(scene.fog.color, scene.fog.near, scene.fog.far);
       const spawn = world.spawn();
       world.update(spawn.x, spawn.z, (2 * ring + 1) * (2 * ring + 1));
+      world.setRing(ring);
       if (player) {
         player.setWorld(world);
       } else {
         player = createPlayer({ world, camera, input, audio });
       }
+      player.setReducedMotion(settings.reducedMotion);
+      roomHaze = atmosphere.update('Sun Pavilion', 0, true);
+      underwater = false;
+      audio.setUnderwater(false);
+      waterEffects.reset();
+      vignette?.classList.remove('underwater');
+      applyFog();
       player.teleport(spawn.x, spawn.y, spawn.z, spawn.yaw);
       player.updateCamera(1);
       world.setTime(time);
@@ -370,12 +396,17 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
         fog.far = UNDERWATER_FOG_FAR;
       } else {
         fog.color.copy(skyColor);
-        fog.near = fogNear;
-        fog.far = fogFar;
+        fog.near = fogNear * roomHaze;
+        fog.far = fogFar * roomHaze;
       }
       scene.background.copy(fog.color);
-      camera.far = fog.far + CAMERA_FAR_PAD;
-      camera.updateProjectionMatrix();
+      // The ocean has its own distant haze; preserve its horizon beyond the room fog.
+      const oceanView = !underwater && player && world?.journey.roomAt(player.position.x,player.position.z)?.outdoor;
+      const far = oceanView ? 1000 : fog.far + CAMERA_FAR_PAD;
+      if (Math.abs(camera.far - far) > 0.05) {
+        camera.far = far;
+        camera.updateProjectionMatrix();
+      }
       if (world) world.setFog(fog.color, fog.near, fog.far);
     }
 
@@ -561,22 +592,32 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
       if (name !== lastRoom) {
         lastRoom = name;
         ui.patch({ area: name });
-        if (state === 'playing') ui.toast(name, 3500);
+        if (state === 'playing') ui.announceArea(name);
       }
-      const canRest = !!p && world.journey.restAvailable(p.x, p.z, p.y);
-      if (ui.getSnapshot().canRest !== canRest) ui.patch({ canRest });
+      const spot = p && world.journey.restSpotAt(p.x, p.z, p.y);
+      const canRest = !!spot, restPrompt = spot?.ending ? 'Rest' : 'Sit for a while';
+      if (ui.getSnapshot().canRest !== canRest || ui.getSnapshot().restPrompt !== restPrompt) ui.patch({ canRest, restPrompt });
     }
 
     function toggleRest() {
       if (state !== 'playing') return;
-      if (!resting && !world.journey.restAvailable(player.position.x, player.position.z, player.position.y)) return;
+      if (!resting) {
+        const p = player.position;
+        activeRest = world.journey.restSpotAt(p.x,p.z,p.y);
+        if (!activeRest) return;
+        player.velocity.set(0,0,0);
+        player.state.speed = 0;
+        restEye.set(activeRest.x,activeRest.y+(activeRest.ending?1.25:1.55),activeRest.z);
+        restView.setFromEuler(new THREE.Euler(-0.04,activeRest.yaw,0,'YXZ'));
+      } else activeRest = null;
       resting = !resting;
+      acc = 0;
       input.setEnabled(!resting);
       ui.setTouchControlsVisible(!resting && inputMode === 'touch');
-      ui.patch({ resting });
+      ui.patch({ resting, restEnding: !!activeRest?.ending, restCaption: activeRest?.caption || '' });
       if (resting) {
         if (input.isPointerLocked()) input.exitPointerLock();
-        util.storageSet('poolrooms.completed', true);
+        if (activeRest.ending) util.storageSet('poolrooms.completed', true);
       } else {
         player.updateCamera(1);
         enterPlaying();
@@ -735,7 +776,7 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
       updateHUD();
       loopWanted = true;
       enterPlaying();
-      ui.toast('Follow the light. Take your time.', 3500);
+      ui.announceArea(lastRoom || 'Sun Pavilion');
     }
 
     /**
@@ -764,7 +805,8 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
     function onNewSeed() {
       seed = util.randomSeedString();
       resting = false;
-      ui.patch({ resting: false, canRest: false });
+      activeRest = null;
+      ui.patch({ resting: false, restEnding: false, canRest: false });
       buildWorld();
       syncHash();
       updateHUD();
@@ -787,7 +829,9 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
       if (settings.quality !== prev.quality) applyQuality();
       if (settings.inputMode !== prev.inputMode) applyInputMode();
       if (settings.volume !== prev.volume) audio.setVolume(settings.volume);
+      audio.setMix(settings);
       if (settings.invertY !== prev.invertY) input.setInvertY(settings.invertY);
+      if (settings.reducedMotion !== prev.reducedMotion) player?.setReducedMotion(settings.reducedMotion);
     }
 
     // --- frame loop ------------------------------------------------------------------------------
@@ -851,18 +895,19 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
 
       const pos = player.position;
       const roomName = world.journey.roomAt(pos.x,pos.z)?.name;
-      const dim = roomName === 'Column Sea' ? 0.42 : roomName === 'Sunken Baths' ? 0.65 : 1;
-      hemisphere.intensity += (1.5*dim-hemisphere.intensity)*(1-Math.exp(-dt));
-      sun.intensity += (2*dim-sun.intensity)*(1-Math.exp(-dt));
+      roomHaze = atmosphere.update(roomName, dt);
+      applyFog();
       world.update(pos.x, pos.z, 2);
       if (resting) {
-        camera.position.lerp(restEye, 1 - Math.exp(-dt * 1.6));
-        camera.quaternion.slerp(restView, 1 - Math.exp(-dt * 1.6));
+        const settle = settings.reducedMotion ? 1 : 1 - Math.exp(-dt * 1.6);
+        camera.position.lerp(restEye, settle);
+        camera.quaternion.slerp(restView, settle);
       } else player.updateCamera(alpha);
       updateUnderwater();
+      waterEffects.update(dt, world.waterAt(camera.position.x,camera.position.z), underwater, settings.reducedMotion, renderer.getPixelRatio());
       skyDome.position.copy(camera.position);
       skyDome.visible = !underwater;
-      world.setTime(time);
+      world.setTime(time, player);
 
       hudTimer += dt;
       if (hudTimer >= HUD_INTERVAL) {
@@ -877,7 +922,12 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
       audioState.swimming = ps.swimming;
       audioState.underwater = underwater;
       audioState.speed = ps.speed;
-      audioState.room = world.journey.roomAt(pos.x, pos.z)?.name || 'Sun Pavilion';
+      audioState.room = roomName || 'Sun Pavilion';
+      audioState.position = camera.position;
+      audioState.time = time;
+      audioState.ending = resting && !!activeRest?.ending;
+      audioState.pitch = resting ? -0.04 : player.pitch;
+      audioState.yaw = resting ? activeRest.yaw : player.yaw;
       audio.update(dt, audioState);
 
       if (shadowsOn && dirLight) followLight(pos);
@@ -947,6 +997,7 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
     input.setInvertY(settings.invertY);
     input.setEnabled(false);
     audio.setVolume(settings.volume);
+    audio.setMix(settings);
     applyQuality(); // fog, composer, shadows and viewport; nothing is drawn until the world exists
     ui.setSettings(settings);
     ui.setTouchControlsVisible(false);
@@ -993,6 +1044,7 @@ const ADDONS = { EffectComposer, RenderPass, UnrealBloomPass, OutputPass };
         canvas.removeEventListener('webglcontextrestored', onContextRestored);
         input.dispose();
         audio.dispose();
+        waterEffects.dispose();
         ui.dispose();
         world?.dispose();
         Object.values(textures || {}).forEach(texture => texture.dispose());

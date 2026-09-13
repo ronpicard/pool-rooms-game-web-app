@@ -1,5 +1,8 @@
+import { tileFinish, createWetDeck, wetEdgeGeometry } from './surfaces.js';
 import * as THREE from 'three';
 import { Reflector } from 'three/addons/objects/Reflector.js';
+import { textures as textureFactory } from './textures.js';
+import { createSlide, createBeachBalls } from './pool-toys.js';
 
 // A designed, nine-chunk arrival hall. Terrain and meshes share the same coordinates.
 export const inLandmark = (cx, cz) => Math.abs(cx) <= 1 && Math.abs(cz) <= 1;
@@ -27,12 +30,12 @@ export function createLandmark({ group, textures, createWater, poolMaterial, rin
   root.name = 'The Sun Pavilion';
   group.add(root);
   const owned = new Set();
-  const balls = [];
   const waterMeshes = [];
   const material = (color, extra = {}) => {
-    const m = new THREE.MeshStandardMaterial({ color, roughness: 0.3, ...extra });
+    const m = new THREE.MeshStandardMaterial({ color, roughness: 0.3, ...tileFinish(extra.map, textures), ...extra });
     owned.add(m); return m;
   };
+  const wetDeck = createWetDeck(textures); owned.add(wetDeck);
   const ivory = material(0xfff2d9, { map: textures.wall });
   const coral = material(0xe78a78);
   const teal = material(0x269d9f);
@@ -102,6 +105,9 @@ export function createLandmark({ group, textures, createWater, poolMaterial, rin
   }
   // Pool water and smooth colored coping follow the same ellipses as the floor collision.
   for (const p of pools) {
+    const edge = Array.from({length:129},(_,i)=>{const a=-i/128*Math.PI*2; return [p.x+Math.cos(a)*p.rx*1.12,p.z+Math.sin(a)*p.rz*1.12];});
+    const outer = Array.from({length:129},(_,i)=>{const a=-i/128*Math.PI*2; return [p.x+Math.cos(a)*(p.rx*1.12+0.8),p.z+Math.sin(a)*(p.rz*1.12+0.8)];});
+    mesh(wetEdgeGeometry(edge,outer,0.026),wetDeck);
     // Smooth concentric terraces hide the collision grid's stair-step silhouette.
     // Their step depths match landmarkTerrain; the broad outer ring covers cell-edge gaps.
     const positions = [], uvs = [], triangles = [];
@@ -165,36 +171,11 @@ export function createLandmark({ group, textures, createWater, poolMaterial, rin
     }
   };
   // Curved open flume: the rider follows the center of this exact mesh.
-  const slide = new THREE.CatmullRomCurve3([
+  const slideRide = createSlide({ mesh, material: yellow, name: 'Golden spiral slide', points: [
     [32,6,20.5], [29,5.8,20.5], [24,5.1,23], [21,4.3,27],
     [15,3.5,28], [11,2.8,25], [13,2,21], [19,1.3,19], [22,0.65,15], [20,-0.05,10],
-  ].map(v => new THREE.Vector3(...v)), false, 'centripetal');
-  const vertices = [], indices = [];
-  const segments = 180, sides = 18;
-  for (let i=0; i<=segments; i++) {
-    const p = slide.getPointAt(i/segments), t = slide.getTangentAt(i/segments);
-    const side = new THREE.Vector3(-t.z,0,t.x).normalize();
-    for (let j=0; j<=sides; j++) {
-      const angle = -Math.PI/2 + j/sides*Math.PI;
-      const q = p.clone().addScaledVector(side, Math.sin(angle)*1.2);
-      q.y += (1-Math.cos(angle))*1.2;
-      vertices.push(q.x,q.y,q.z);
-      if (i<segments && j<sides) {
-        const a=i*(sides+1)+j, b=a+sides+1;
-        indices.push(a,b,a+1,b,b+1,a+1);
-      }
-    }
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(vertices,3)); geo.setIndex(indices); geo.computeVertexNormals();
-  mesh(geo,yellow).name = 'Golden spiral slide';
-  for (const s of [-1,1]) {
-    const path = new THREE.CatmullRomCurve3(Array.from({length:100},(_,i)=>{
-      const p=slide.getPointAt(i/99), t=slide.getTangentAt(i/99);
-      p.addScaledVector(new THREE.Vector3(-t.z,0,t.x).normalize(),s*1.2); p.y+=1.2; return p;
-    }));
-    mesh(new THREE.TubeGeometry(path,150,0.075,8,false), yellow);
-  }
+  ] });
+  const slide = slideRide.curve;
   for (const t of [0.15,0.35,0.55,0.72]) {
     const p=slide.getPointAt(t);
     bar([p.x,0,p.z], [p.x,p.y,p.z],0.16,teal);
@@ -213,30 +194,10 @@ export function createLandmark({ group, textures, createWater, poolMaterial, rin
     bar(a,b,0.08,coral);
     walls.push({ x0: Math.min(a[0],b[0])-0.1,x1:Math.max(a[0],b[0])+0.1,z0:Math.min(a[2],b[2])-0.1,z1:Math.max(a[2],b[2])+0.1,y0:6,y1:8 });
   }
-  // Beach balls have real colored longitudinal panels, plus buoyant, pushable movement.
-  const ballMats = [0xfff4df,0xed7868,0xffcb49,0x3eafb6,0x8c91d5,0xfff4df].map(c=>material(c,{roughness:0.23}));
-  const ballGeo = new THREE.SphereGeometry(1,36,20); owned.add(ballGeo);
-  ballGeo.clearGroups();
-  // Each longitude patch gets one material; shared geometry keeps this inexpensive.
-  const idx=ballGeo.index, pos=ballGeo.attributes.position;
-  for(let i=0;i<idx.count;i+=3) {
-    const a=idx.getX(i), b=idx.getX(i+1), c=idx.getX(i+2);
-    const x=pos.getX(a)+pos.getX(b)+pos.getX(c), z=pos.getZ(a)+pos.getZ(b)+pos.getZ(c);
-    const section=Math.floor(((Math.atan2(z,x)+Math.PI)/(Math.PI*2))*6)%6;
-    ballGeo.addGroup(i,3,section);
-  }
-  // Merge the material groups by reordering triangles (six draw calls per ball).
-  const sorted=[], counts=Array(6).fill(0);
-  for(let m=0;m<6;m++) for(const g of ballGeo.groups) if(g.materialIndex===m) {
-    for(let j=0;j<3;j++) sorted.push(idx.getX(g.start+j)); counts[m]+=3;
-  }
-  ballGeo.setIndex(sorted); ballGeo.clearGroups(); let offset=0;
-  counts.forEach((count,m)=>{ballGeo.addGroup(offset,count,m);offset+=count;});
-  for(const [x,z,r] of [[2,17,1.15],[20,5,0.8],[-2,2,0.65],[13,-2,0.95],[-12,31,0.65],[28,31,1.4]]) {
-    const ball=mesh(ballGeo,ballMats,x,r*0.65,z); ball.scale.setScalar(r); ball.name = 'Beach ball';
-    const shadow=contactShadow(x,z,r*3,landmarkTerrain(x,z).floor+0.025);
-    balls.push({shadow,mesh:ball,x,z,r,vx:0,vz:0,phase:x+z,wet:Number.isFinite(landmarkTerrain(x,z).water)});
-  }
+  const beachBalls = createBeachBalls({
+    placements: [[2,17,1.15],[20,5,0.8],[-2,2,0.65],[13,-2,0.95],[-12,31,0.65],[28,31,1.4]],
+    mesh, material, contactShadow, terrain: landmarkTerrain, walls, bounds: [-23,-23,47,47],
+  });
   // Sculptural rings and a small fountain make the shallow baths distinct destinations.
   const sculpture=mesh(new THREE.TorusGeometry(5.2,0.45,16,64),lavender,-12,5.2,31);
   sculpture.rotation.y=Math.PI/6;
@@ -249,9 +210,7 @@ export function createLandmark({ group, textures, createWater, poolMaterial, rin
     mesh(new THREE.TubeGeometry(path,24,0.045,6,false),stream);
   }
   const label = (text,x,y,z,color= '#266d73') => {
-    const c=document.createElement('canvas'); c.width=1024;c.height=128;
-    const ctx=c.getContext('2d');ctx.fillStyle=color;ctx.font='600 54px sans-serif';ctx.textAlign='center';ctx.fillText(text,512,80);
-    const texture=new THREE.CanvasTexture(c);texture.colorSpace=THREE.SRGBColorSpace;owned.add(texture);
+    const texture=textureFactory.createLabelTexture(text,{color});owned.add(texture);
     const mat=new THREE.MeshBasicMaterial({map:texture,transparent:true,side:THREE.DoubleSide});owned.add(mat);
     return mesh(new THREE.PlaneGeometry(13,1.625),mat,x,y,z);
   };
@@ -259,40 +218,10 @@ export function createLandmark({ group, textures, createWater, poolMaterial, rin
   label('S U N   P A V I L I O N',12,10.6,-20.05);
   label('01   /   GOLDEN SLIDE',34,2.6,38, '#b35d39');
   label('02   /   LILAC BATHS',-12,1.8,40);
-  let ride = null;
-  const entry=slide.getPointAt(0), tangent=new THREE.Vector3();
-  function stepRide(position, velocity, dt) {
-    if (ride===null && position.distanceTo(entry)<1.1) ride=0;
-    if (ride===null) return null;
-    // The controller resets the ride explicitly on teleport; progress only advances during physics.
-    ride=Math.min(1,ride+dt/6.5);
-    position.copy(slide.getPointAt(ride)); position.y+=0.12;
-    tangent.copy(slide.getTangentAt(ride)); velocity.copy(tangent).multiplyScalar(8);
-    const result={yaw:Math.atan2(-tangent.x,-tangent.z), finished:ride>=1};
-    if(result.finished) ride=null;
-    return result;
-  }
   return {
-    root, walls, waterMeshes, stepRide, resetRide(){ride=null;},
+    root, walls, waterMeshes, pools, stepRide: slideRide.stepRide, resetRide: slideRide.resetRide,
     setQuality(ring) { reflectedUniforms.uReflect.value = ring > 1 ? 1 : 0; },
-    update(t,dt,camera) {
-      for(const b of balls) {
-        if(camera) {
-          const dx=b.x-camera.position.x,dz=b.z-camera.position.z,d=Math.hypot(dx,dz);
-          if(d<b.r+0.65 && d>0.01 && Math.abs(camera.position.y-b.mesh.position.y)<2.6) {b.vx+=dx/d*dt*5;b.vz+=dz/d*dt*5;}
-        }
-        const nx=b.x+b.vx*dt,nz=b.z+b.vz*dt;
-        const blocked = b.wet
-          ? !Number.isFinite(landmarkTerrain(nx,nz).water)
-          : nx < -23 + b.r || nx > 47 - b.r || nz < -23 + b.r || nz > 47 - b.r ||
-            walls.some(w => nx + b.r > w.x0 && nx - b.r < w.x1 && nz + b.r > w.z0 && nz - b.r < w.z1 && w.y0 < b.r * 2);
-        if(blocked) {b.vx*=-0.7;b.vz*=-0.7;} else {b.x=nx;b.z=nz;}
-        b.vx*=Math.exp(-dt*1.3); b.vz*=Math.exp(-dt*1.3);
-        b.shadow.position.set(b.x,landmarkTerrain(b.x,b.z).floor+0.025,b.z);
-        b.mesh.position.set(b.x,b.wet ? b.r*0.55-0.12+Math.sin(t*1.3+b.phase)*0.065 : b.r,b.z);
-        b.mesh.rotation.x+=b.vz*dt/b.r;b.mesh.rotation.z-=b.vx*dt/b.r;
-      }
-    },
+    update: beachBalls.update,
     dispose(){reflector.geometry.dispose();reflector.dispose();for(const item of owned)item.dispose();root.clear();group.remove(root);},
   };
 }

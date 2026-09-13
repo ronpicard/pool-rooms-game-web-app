@@ -2,14 +2,14 @@
 export function createUIStore() {
   let snapshot = {
     menu: 'start', ready: false, seed: '', touch: false, controls: false,
-    settings: { quality: 'medium', inputMode: 'auto', volume: 0.8, invertY: false, mode: 'wander' },
+    settings: { quality: 'medium', inputMode: 'auto', volume: 0.8, environmentVolume: 1, movementVolume: 0.8, musicVolume: 0, gentleSound: false, invertY: false, reducedMotion: false, mode: 'wander' },
     hud: { seed: '—', depth: 0, best: 0, mode: 'wander' },
     compass: { visible: false, angle: 0, near: false },
-    area: 'Sun Pavilion', canRest: false, resting: false, fade: false, fadeMs: 700, toast: '', debug: '', error: '',
+    area: 'Sun Pavilion', arrival: '', canRest: false, resting: false, restEnding: false, restPrompt: 'Rest', restCaption: '', fade: false, fadeMs: 700, toast: '', debug: '', error: '',
   };
   const listeners = new Set();
   const timers = new Map();
-  let toastTimer;
+  let toastTimer, arrivalTimer;
   let callbacks = {};
   let disposed = false;
   const patch = (next) => {
@@ -46,11 +46,16 @@ export function createUIStore() {
       if (Object.keys(compass).some(key => snapshot.compass[key] !== compass[key])) patch({ compass: { ...compass } });
     },
     fadeToWhite(ms) { patch({ fade: true, fadeMs: ms }); return delay(ms + 120); },
-    fadeFromWhite(ms) { patch({ area: 'Sun Pavilion', canRest: false, resting: false, fade: false, fadeMs: ms }); return delay(ms + 120); },
+    fadeFromWhite(ms) { patch({ area: 'Sun Pavilion', arrival: '', canRest: false, resting: false, restEnding: false, restPrompt: 'Rest', restCaption: '', fade: false, fadeMs: ms }); return delay(ms + 120); },
     toast(message, ms = 1800) {
       clearTimeout(toastTimer);
       patch({ toast: String(message) });
       toastTimer = setTimeout(() => patch({ toast: '' }), ms);
+    },
+    announceArea(name) {
+      clearTimeout(arrivalTimer);
+      patch({ arrival: name });
+      arrivalTimer = setTimeout(() => patch({ arrival: '' }), 6500);
     },
     setTouchControlsVisible: controls => patch({ controls }),
     setDebug: debug => patch({ debug }),
@@ -66,6 +71,7 @@ export function createUIStore() {
     dispose() {
       disposed = true;
       clearTimeout(toastTimer);
+      clearTimeout(arrivalTimer);
       timers.forEach((resolve, timer) => { clearTimeout(timer); resolve(); });
       timers.clear();
       callbacks = {};

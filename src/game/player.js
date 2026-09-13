@@ -34,6 +34,7 @@ import { CONST } from './util.js';
   const PUSH_EPS = 1e-4;        // penetrations smaller than this are ignored by the collision solver
   const MAX_PASSES = 3;         // collision solver passes per step
   const MAX_FLOOR_RISE = 4;     // a floor farther above the feet than this means "inside solid": ignored
+  const STEP_CAMERA_RATE = 12; // blend tread height changes into a continuous climb/descent
 
   /**
    * Create the player controller (CONTRACT §8).
@@ -69,13 +70,16 @@ import { CONST } from './util.js';
     let yaw = 0;
     let pitch = 0;
     let coyote = COYOTE_TIME;      // time since the feet last touched the ground
+    let wetFeet = 0, dripTimer = 0;
     let stride = 0;                // horizontal distance walked since the last footstep sound
     let eyeH = C.EYE_HEIGHT;       // current eye height above the feet (blends toward EYE_SWIM when swimming)
     let prevEyeH = C.EYE_HEIGHT;
+    let reducedMotion = false;
     let bobPhase = 0;
     let bobAmp = 0;
     let bobY = 0;                  // current head bob offset
     let prevBobY = 0;
+    let stepOffset = 0, prevStepOffset = 0;
     let camY = C.EYE_HEIGHT;       // camera y written by the last updateCamera()
     let nx = 0;                    // candidate XZ position being resolved (shared with pushOutRect)
     let nz = 0;
@@ -190,13 +194,14 @@ import { CONST } from './util.js';
       yaw = Number(newYaw) || 0;
       pitch = 0;
       coyote = COYOTE_TIME;
-      stride = 0;
+      stride = 0; wetFeet = 0; dripTimer = 0;
       eyeH = C.EYE_HEIGHT;
       prevEyeH = C.EYE_HEIGHT;
       bobPhase = 0;
       bobAmp = 0;
       bobY = 0;
       prevBobY = 0;
+      stepOffset = prevStepOffset = 0;
       camY = y + C.EYE_HEIGHT;
       state.onGround = false;
       state.inWater = false;
@@ -225,6 +230,7 @@ import { CONST } from './util.js';
       prevPosition.copy(position);
       prevEyeH = eyeH;
       prevBobY = bobY;
+      prevStepOffset = stepOffset;
 
       const x = position.x;
       const feetY = position.y;
@@ -234,7 +240,8 @@ import { CONST } from './util.js';
       const ride = world.stepRide?.(position, velocity, dt);
       if (ride) {
         input.consumeJump();
-        yaw = ride.yaw;
+        // Input owns the view while the ride owns position; looking never steers the flume.
+        stepOffset *= Math.exp(-STEP_CAMERA_RATE * dt);
         state.onGround = false;
         state.inWater = false;
         state.swimming = false;
@@ -324,7 +331,7 @@ import { CONST } from './util.js';
       let onGround = false;
       if (ny <= f) {
         if (!wasOnGround && velocity.y < SOFT_LANDING_VY) {
-          audio.footstep(velocity.y < HARD_LANDING_VY ? 1.6 : 0.9);
+          audio.footstep(velocity.y < HARD_LANDING_VY ? 1.6 : 0.9, wetFeet > 0 ? 'wet' : 'dry');
         }
         ny = f;
         velocity.y = 0;
@@ -340,9 +347,18 @@ import { CONST } from './util.js';
         velocity.y = Math.min(velocity.y, 0);
       }
       if (ny < f) ny = f;
+      // Keep collision on the real treads, absorbing only grounded step snaps in the camera.
+      // Jumps and long drops retain their physical motion; teleports clear this offset explicitly.
+      if (onGround && !jumped && (wasOnGround || inWater) && Math.abs(ny-feetY) <= stepLimit) {
+        stepOffset = clamp(stepOffset + feetY - ny, -1.3, 1.3);
+      }
+      stepOffset *= Math.exp(-STEP_CAMERA_RATE * dt);
 
       // 6. Water transitions and the underwater flag (eye height is lower while swimming).
       if (inWater && !wasInWater) audio.splash(clamp(-vyBefore / 6, 0.5, 1.5));
+      wetFeet = inWater ? 7 : Math.max(0, wetFeet - dt);
+      dripTimer -= dt;
+      if (!inWater && wetFeet > 0 && dripTimer <= 0) { audio.waterDrip?.(); dripTimer = 1.3 + Math.random() * 0.9; }
       const underwater = ny + (swimming ? EYE_SWIM : C.EYE_HEIGHT) < waterY - 0.02;
 
       // 7. Footsteps from the distance walked on the ground; wading plays small splashes instead.
@@ -354,8 +370,8 @@ import { CONST } from './util.js';
         const strideLen = inWater ? STRIDE_WADE : (sprint ? STRIDE_SPRINT : STRIDE_WALK);
         if (stride >= strideLen) {
           stride = 0;
-          if (inWater) audio.splash(0.25);
-          else audio.footstep(sprint ? 1.2 : 1);
+          if (inWater) audio.splash(sprint ? 0.35 : 0.2);
+          else audio.footstep(sprint ? 1.2 : 1, wetFeet > 0 ? 'wet' : 'dry');
         }
       }
 
@@ -385,7 +401,7 @@ import { CONST } from './util.js';
       const fade = BOB_AMP * BOB_FADE * dt;
       bobAmp += clamp(ampTarget - bobAmp, -fade, fade);
       bobPhase = (bobPhase + phaseRate * dt) % (Math.PI * 2);
-      bobY = Math.sin(bobPhase) * bobAmp;
+      bobY = reducedMotion ? 0 : Math.sin(bobPhase) * bobAmp;
     }
 
     /**
@@ -396,6 +412,7 @@ import { CONST } from './util.js';
       const a = clamp(alpha, 0, 1);
       camPos.lerpVectors(prevPosition, position, a);
       camPos.y += prevEyeH + (eyeH - prevEyeH) * a + prevBobY + (bobY - prevBobY) * a;
+      camPos.y += prevStepOffset + (stepOffset - prevStepOffset) * a;
       camera.position.copy(camPos);
       if (camera.rotation.order !== 'YXZ') camera.rotation.order = 'YXZ';
       camera.rotation.set(pitch, yaw, 0);
@@ -420,6 +437,7 @@ import { CONST } from './util.js';
       get pitch() { return pitch; },
       set pitch(v) { pitch = clamp(v, -1.55, 1.55); },
       setWorld,
+      setReducedMotion(value) { reducedMotion = !!value; if (reducedMotion) bobY = prevBobY = 0; },
       teleport,
       applyLook,
       fixedStep,

@@ -2,6 +2,7 @@ export function PauseMenu({ state, ui }) {
   return (
     <div id="pause-menu" className="overlay open" hidden={state.menu !== "pause"}>
       <div className="card">
+        <p className="menu-eyebrow">{state.area}</p>
         <h2>Paused</h2>
         <button id="btn-resume" onClick={() => ui.action("onResume")} className="btn primary" type="button">Resume</button>
 
@@ -23,12 +24,32 @@ export function PauseMenu({ state, ui }) {
             </select>
           </label>
           <label className="row" htmlFor="rng-volume">
-            <span>Volume</span>
+            <span>Master volume</span>
             <input id="rng-volume" type="range" min="0" max="100" step="1" value={Math.round(state.settings.volume * 100)} onChange={event => ui.changeSetting("volume", Number(event.target.value) / 100)} />
           </label>
+          <fieldset className="sound-settings">
+            <legend>Make room for quiet</legend>
+            {[["environmentVolume", "Environment"], ["movementVolume", "Movement"], ["musicVolume", "Music"]].map(([key, label]) => (
+              <label className="row" htmlFor={`rng-${key}`} key={key}>
+                <span>{label}{key === "musicVolume" && <small className="setting-description">Optional · quiet phrases, long pauses</small>}</span>
+                <span className="sound-level">
+                  <input id={`rng-${key}`} type="range" min="0" max="100" step="1" value={Math.round(state.settings[key] * 100)} aria-valuetext={state.settings[key] === 0 ? "Off" : `${Math.round(state.settings[key] * 100)} percent`} onChange={event => ui.changeSetting(key, Number(event.target.value) / 100)} />
+                  <output htmlFor={`rng-${key}`}>{state.settings[key] === 0 ? "Off" : `${Math.round(state.settings[key] * 100)}%`}</output>
+                </span>
+              </label>
+            ))}
+            <label className="row" htmlFor="chk-gentle">
+              <span>Gentle sound<small className="setting-description">Softer drips, splashes &amp; footsteps</small></span>
+              <input id="chk-gentle" type="checkbox" checked={state.settings.gentleSound} onChange={event => ui.changeSetting("gentleSound", event.target.checked)} />
+            </label>
+          </fieldset>
           <label className="row" htmlFor="chk-invert">
             <span>Invert look</span>
             <input id="chk-invert" checked={state.settings.invertY} onChange={event => ui.changeSetting("invertY", event.target.checked)} type="checkbox" />
+          </label>
+          <label className="row" htmlFor="chk-motion">
+            <span>Reduced motion<small className="setting-description">Steady camera &amp; simpler transitions</small></span>
+            <input id="chk-motion" checked={state.settings.reducedMotion} onChange={event => ui.changeSetting("reducedMotion", event.target.checked)} type="checkbox" />
           </label>
         </div>
 

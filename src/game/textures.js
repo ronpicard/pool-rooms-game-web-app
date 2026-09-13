@@ -132,7 +132,7 @@ import { util } from './util.js';
    * lightness / hue / saturation shift, a highlight on its top-left edges and a shadow on its bottom-right edges,
    * a faint glaze blotch and per-pixel grain; grout lines are dark and slightly noisy.
    * @param {{ size?: number, unitsPerTexture?: number, tilesPerUnit?: number, baseColor?: string, variation?: number,
-   *           groutColor?: string, seed?: number, groutPx?: number }} [opts]
+   *           groutColor?: string, seed?: number, groutPx?: number, relief?: boolean }} [opts]
    * @returns {THREE.CanvasTexture}
    */
   function createTileTexture(opts) {
@@ -183,6 +183,13 @@ import { util } from './util.js';
         const idx = (y * size + x) * 4;
         const grain = hashUnit(grainSeed, x, y) - 0.5;
 
+        if (o.relief) {
+          const edge = Math.min(px-groutPx, py-groutPx, tilePx-px, tilePx-py);
+          const raised = util.smoothstep(0, bevelPx, edge);
+          putPixel(data, idx, 50 + raised * 180, 248 - raised * 78 + grain * 8, 0);
+          continue;
+        }
+
         if (px < groutPx || py < groutPx) {
           // Grout: dark, slightly grainy, a touch darker right against the tile edge (shadow in the seam).
           const seamShade = px < 1 || py < 1 ? 0.88 : 1;
@@ -212,7 +219,7 @@ import { util } from './util.js';
     }
 
     ctx.putImageData(image, 0, 0);
-    return finishTexture(canvas, { colorSpace: THREE.SRGBColorSpace, repeat: true });
+    return finishTexture(canvas, { colorSpace: o.relief ? THREE.NoColorSpace : THREE.SRGBColorSpace, repeat: true });
   }
 
   /**
@@ -362,10 +369,32 @@ import { util } from './util.js';
     return finishTexture(canvas, { colorSpace: THREE.SRGBColorSpace, repeat: false });
   }
 
+  /** Canvas lettering shared by Pavilion labels and the route's ceramic signs. */
+  function createLabelTexture(text, { color = '#266d73', plaque = false, caption = '' } = {}) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1024; canvas.height = plaque ? 384 : 128;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Could not create the canvas for a room sign');
+    if (plaque) {
+      ctx.fillStyle = '#f2eedf'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.strokeStyle = '#b3a78a'; ctx.lineWidth = 3; ctx.strokeRect(20, 20, 984, 344);
+      ctx.fillStyle = color; ctx.textAlign = 'left';
+      ctx.font = '500 28px sans-serif'; ctx.fillText(caption.toUpperCase(), 65, 95, 870);
+      ctx.font = '48px Georgia, serif'; ctx.fillText(text, 65, 189, 880);
+      ctx.lineWidth = 5; ctx.strokeStyle = color;
+      ctx.beginPath(); ctx.moveTo(70, 285); ctx.lineTo(195, 285);
+      ctx.moveTo(170, 263); ctx.lineTo(195, 285); ctx.lineTo(170, 307); ctx.stroke();
+    } else {
+      ctx.fillStyle = color; ctx.font = '600 54px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText(text, 512, 80);
+    }
+    return finishTexture(canvas, { colorSpace: THREE.SRGBColorSpace, repeat: false });
+  }
+
   export const textures = {
     createTileTexture,
     createPlasterTexture,
     createWaterNormalTexture,
     createGlowTexture,
+    createLabelTexture,
   };
-

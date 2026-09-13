@@ -1,3 +1,7 @@
+import { tileFinish, setSurfaceQuality } from './surfaces.js';
+import { createSoundscape } from './acoustics.js';
+import { OCEAN_WAVES } from './ocean.js';
+import { RAIN_PATTERN } from './water-effects.js';
 import * as THREE from 'three';
 import { createLandmark, inLandmark, landmarkTerrain } from './landmark.js';
 import { createJourney } from './journey.js';
@@ -455,7 +459,7 @@ import { CONST } from './util.js';
     // ------------------------------------------------------------------------------------------
 
     function surfaceMaterial(map) {
-      return new THREE.MeshStandardMaterial({ map, roughness: 0.42, metalness: 0 });
+      return new THREE.MeshStandardMaterial({ map, ...tileFinish(map, textures), roughness: 0.6, metalness: 0 });
     }
 
     const materials = {
@@ -466,18 +470,19 @@ import { CONST } from './util.js';
     };
 
     const causticTime = { value: 0 };
+    materials.pool.userData.causticTime = causticTime;
     materials.pool.onBeforeCompile = (shader) => {
       shader.uniforms.uCausticTime = causticTime;
       shader.vertexShader = 'varying vec3 vCausticWorld;\n' + shader.vertexShader;
       shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvCausticWorld = (modelMatrix * vec4(position, 1.0)).xyz;');
       shader.fragmentShader = 'uniform float uCausticTime;\nvarying vec3 vCausticWorld;\n' + shader.fragmentShader;
-      shader.fragmentShader = shader.fragmentShader.replace('#include <dithering_fragment>', `
+      shader.fragmentShader = shader.fragmentShader.replace('#include <emissivemap_fragment>', `
+        #include <emissivemap_fragment>
         vec2 q = vCausticWorld.xz * 2.2;
         float a = sin(q.x + sin(q.y * 1.3 + uCausticTime * 0.5));
         float b = cos(q.y + sin(q.x * 0.8 - uCausticTime * 0.4));
         float light = pow(1.0 - abs(a * b), 18.0);
-        gl_FragColor.rgb += vec3(0.08, 0.15, 0.13) * light;
-        #include <dithering_fragment>
+        totalEmissiveRadiance += vec3(0.12, 0.25, 0.20) * light;
       `);
     };
 
@@ -533,20 +538,73 @@ import { CONST } from './util.js';
 
     // Fog uses Three's own chunks (fog_*): the renderer fills fogColor/fogNear/fogFar from scene.fog every
     // frame and applies it after tone mapping, exactly like the lit materials, so water matches the room.
+    // Shared by ocean displacement and shading so visible crests and their normals agree.
     const WATER_VERT = [
       'uniform float uTime;',
       'varying vec3 vWorld;',
       '#include <fog_pars_vertex>',
+      '#ifdef OCEAN',
+      OCEAN_WAVES,
+      '#endif',
       'void main() {',
       '  vec4 wp = modelMatrix * vec4(position, 1.0);',
+      '#ifdef OCEAN',
+      '  wp.y += oceanSurface(wp.xz, uTime).x;',
+      '#else',
       // Subtle vertex ripple in world space (the plane is rotated flat, so displace world y).
       '  wp.y += 0.018 * (0.6 * sin(wp.x * 1.9 + uTime * 1.4) + 0.4 * sin(wp.z * 2.3 - uTime * 1.1));',
+      '#endif',
       '  vWorld = wp.xyz;',
       '  vec4 mvPosition = viewMatrix * wp;',   // fog_vertex reads the view-space depth from mvPosition
       '  #include <fog_vertex>',
       '  gl_Position = projectionMatrix * mvPosition;',
       '}',
     ].join('\n');
+
+    const OCEAN_FRAG = `
+      uniform float uTime;
+      uniform sampler2D uNormalMap;
+      uniform vec3 uCameraPos;
+      uniform vec3 uWaterLight;
+      uniform vec4 uLandBounds;
+      varying vec3 vWorld;
+      ${OCEAN_WAVES}
+      void main() {
+        if (vWorld.x > uLandBounds.x && vWorld.x < uLandBounds.z && vWorld.z > uLandBounds.y && vWorld.z < uLandBounds.w) discard;
+        float distanceToEye = length(uCameraPos.xz - vWorld.xz);
+        vec3 waves = oceanSurface(vWorld.xz, uTime);
+        vec2 drift = vec2(sin(vWorld.x * 0.12 + vWorld.z * 0.07), cos(vWorld.z * 0.1 - vWorld.x * 0.06)) * 0.35;
+        vec3 t1 = texture2D(uNormalMap, vWorld.xz * 0.16 + drift + vec2(0.019, 0.011) * uTime).xyz * 2.0 - 1.0;
+        mat2 crossWind = mat2(0.8, -0.6, 0.6, 0.8);
+        vec3 t2 = texture2D(uNormalMap, crossWind * vWorld.xz * 0.31 - drift - vec2(0.013, 0.017) * uTime).xyz * 2.0 - 1.0;
+        // Fine wind ripples fade with distance to keep the horizon from shimmering.
+        float detail = 1.0 - smoothstep(35.0, 180.0, distanceToEye);
+        vec2 slope = waves.yz + (t1.xy + crossWind * t2.xy * 0.65) * 0.1 * detail;
+        vec3 n = normalize(vec3(-slope.x, 1.0, -slope.y));
+        vec3 v = normalize(uCameraPos - vWorld);
+        float facing = max(dot(n, v), 0.0);
+        float fresnel = 0.02 + 0.98 * pow(1.0 - facing, 5.0);
+        vec3 reflected = reflect(-v, n);
+        float skyHeight = max(0.0, reflected.y);
+        vec3 horizon = vec3(0.87, 0.91, 0.86);
+        vec3 sky = mix(horizon, vec3(0.29, 0.61, 0.76), smoothstep(0.0, 0.7, skyHeight));
+        float cloudBands = sin(reflected.x * 13.0 + sin(reflected.z * 11.0)) * sin(reflected.z * 19.0 + reflected.x * 5.0);
+        float clouds = smoothstep(0.24, 0.68, cloudBands) * smoothstep(0.03, 0.16, skyHeight) * (1.0-smoothstep(0.25, 0.5, skyHeight));
+        sky = mix(sky, vec3(0.97, 0.97, 0.9), clouds * 0.65);
+        // Deep water absorbs light; gentle crests pick up a little more turquoise.
+        vec3 body = mix(vec3(0.016, 0.10, 0.145), vec3(0.035, 0.235, 0.255), facing);
+        body += vec3(0.006, 0.024, 0.023) * smoothstep(-0.15, 0.35, waves.x);
+        vec3 halfLight = normalize(normalize(vec3(0.3, 1.0, 0.2)) + v);
+        float sun = pow(max(dot(n, halfLight), 0.0), 64.0) * 0.35
+          + pow(max(dot(n, halfLight), 0.0), 240.0) * 0.8 * detail;
+        vec3 color = mix(body * uWaterLight, sky, fresnel) + vec3(1.0, 0.91, 0.72) * sun;
+        // Sea haze reaches a distant horizon, independently of the indoor architecture fog.
+        color = mix(color, horizon, smoothstep(120.0, 850.0, distanceToEye));
+        gl_FragColor = vec4(color, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }
+    `;
 
     const WATER_FRAG = [
       'uniform float uTime;',
@@ -559,8 +617,23 @@ import { CONST } from './util.js';
       'uniform sampler2D uReflection;',
       'uniform mat4 uReflectionMatrix;',
       'uniform float uReflect;',
+      'uniform vec4 uRipples[8];',
+      'uniform float uRippleHeights[8];',
+      'uniform float uRain;',
+      '#ifdef RAIN',
+      RAIN_PATTERN,
+      '#endif',
+      'uniform vec3 uWaterLight;',
       'varying vec3 vWorld;',
       '#include <fog_pars_fragment>',
+      // Return the radial slope and crest of an expanding, fading ring.
+      'vec2 ripple(vec2 delta, float age, float strength) {',
+      '  float d = length(delta);',
+      '  float front = d - age * 1.65;',
+      '  float envelope = exp(-front * front * 3.0) * max(0.0, 1.0 - age / 3.2);',
+      '  envelope *= step(0.0, age) * smoothstep(0.0, 0.15, age) * strength;',
+      '  return vec2(cos(front * 13.0), sin(front * 13.0)) * envelope;',
+      '}',
       'void main() {',
       // Two scrolling normal samples in world XZ; tangent z (blue) is the up axis of the flat surface.
       '  vec2 uv1 = vWorld.xz * 0.28 + vec2(0.021, 0.013) * uTime;',
@@ -568,13 +641,46 @@ import { CONST } from './util.js';
       '  vec3 t1 = texture2D(uNormalMap, uv1).xyz * 2.0 - 1.0;',
       '  vec3 t2 = texture2D(uNormalMap, uv2).xyz * 2.0 - 1.0;',
       '  vec3 n = normalize(vec3(t1.x + t2.x, (t1.z + t2.z) * 3.0, t1.y + t2.y));',
+      '  float crest = 0.0;',
+      '  for (int i = 0; i < 8; i++) {',
+      '    float age = uTime - uRipples[i].z;',
+      '    if (age < 0.0 || age > 3.2 || uRipples[i].w <= 0.0) continue;',
+      '    vec2 delta = vWorld.xz - uRipples[i].xy;',
+      '    float sameSurface = 1.0 - smoothstep(0.06, 0.15, abs(vWorld.y - uRippleHeights[i]));',
+      '    vec2 wave = ripple(delta, age, uRipples[i].w * sameSurface);',
+      '    n.xz += delta / max(length(delta), 0.01) * wave.x * 0.22;',
+      '    crest += max(0.0, wave.y) * 0.06;',
+      '  }',
+      '#ifdef RAIN',
+      '  float rainDistance = 1000.0;',
+      '  if (uRain > 0.5) for (int i=0;i<6;i++) rainDistance=min(rainDistance,abs(length(vWorld.xz-uRainSources[i])-2.55));',
+      '  if (rainDistance < 1.4) {',
+      '    vec2 cell = floor(vWorld.xz / 0.65);',
+      '    for (int x=-1;x<=1;x++) for (int z=-1;z<=1;z++) {',
+      '      vec3 impact = rainEvent(cell+vec2(float(x),float(z)),uTime);',
+      '      float age = impact.z;',
+      '      if (age < 0.0 || age > 0.8) continue;',
+      '      vec2 delta = vWorld.xz-impact.xy;',
+      '      float d = length(delta), front = d-age*1.15;',
+      '      float strength = rainCoverage(impact.xy)*exp(-age*3.8)*smoothstep(0.0,0.035,age);',
+      '      float ring = exp(-front*front*140.0);',
+      '      float inner = d-age*0.75;',
+      '      float wake = exp(-inner*inner*180.0)*0.35;',
+      '      n.xz += delta/max(d,0.01)*(ring-wake)*strength*0.32;',
+      '      crest += (ring*0.07+exp(-d*d*140.0-age*18.0)*0.15)*strength;',
+      '    }',
+      '  }',
+      '#endif',
+      '  n = normalize(n);',
       '  if (!gl_FrontFacing) n = -n;',
       '  vec3 v = normalize(uCameraPos - vWorld);',
       '  float cosT = clamp(dot(n, v), 0.0, 1.0);',
       // Schlick fresnel against a pale sky-like reflection colour.
       '  float f = 0.04 + 0.96 * pow(1.0 - cosT, 5.0);',
       '  vec3 base = mix(uShallow, uDeep, clamp(uDepth / 3.5, 0.0, 1.0));',
-      '  vec3 refl = vec3(0.34, 0.70, 0.72);',
+      '  vec3 reflected = reflect(-v, n);',
+      '  float horizon = smoothstep(-0.1, 0.8, reflected.y);',
+      '  vec3 refl = mix(vec3(0.28, 0.48, 0.48), vec3(0.65, 0.81, 0.83), horizon) * uWaterLight;',
       '  if (uReflect > 0.5 && gl_FrontFacing) {',
       '    vec4 projected = uReflectionMatrix * vec4(vWorld, 1.0);',
       '    vec2 reflectionUV = projected.xy / projected.w + n.xz * 0.012;',
@@ -584,8 +690,15 @@ import { CONST } from './util.js';
       '  vec3 l = normalize(vec3(0.3, 1.0, 0.2));',
       '  vec3 h = normalize(l + v);',
       '  float spec = pow(max(dot(n, h), 0.0), 120.0) * 0.55;',
-      '  vec3 col = mix(base, refl, f) + vec3(spec);',
+      '  vec3 col = mix(base * uWaterLight, refl, f) + uWaterLight * (spec + crest);',
       '  float alpha = mix(0.32, 0.82, f) * uOpacity;',
+      // Beneath the surface, the rippling normal bends the bright window overhead.
+      '  if (!gl_FrontFacing) {',
+      '    float window = smoothstep(0.57, 0.72, cosT);',
+      '    float shimmer = sin(vWorld.x * 3.0 + n.x * 14.0 + uTime * 0.7) * sin(vWorld.z * 2.4 + n.z * 14.0);',
+      '    col = mix(base * uWaterLight * 0.7, uWaterLight * vec3(0.65, 0.88, 0.86), window) + shimmer * 0.025;',
+      '    alpha = mix(0.72, 0.18, window) * uOpacity;',
+      '  }',
       '  gl_FragColor = vec4(col, alpha);',
       '  #include <tonemapping_fragment>',
       '  #include <colorspace_fragment>',
@@ -596,16 +709,30 @@ import { CONST } from './util.js';
     const SHALLOW_COLOR = new THREE.Color(0.14, 0.66, 0.63);
     const DEEP_COLOR = new THREE.Color(0.025, 0.34, 0.43);
     const waterMaterials = new Set();
+    // A fixed-size wake buffer is shared by every pool: no meshes or textures per splash.
+    const ripples = Array.from({ length: 8 }, () => new THREE.Vector4(0, 0, -100, 0));
+    const rippleHeights = new Float32Array(8);
+    const waterLight = new THREE.Color(1, 1, 1);
+    const waterWhite = new THREE.Color(1, 1, 1);
+    let rippleIndex = 0, nextRipple = 0, wasInWater = false;
     let camera = null;
 
     /**
-     * Creates one translucent water plane covering world rect [x0,x1]x[z0,z1] at height y.
+     * Creates a pool or open-ocean surface covering world rect [x0,x1]x[z0,z1] at height y.
      * @param {number} depth  water depth, drives the shallow/deep colour mix
      */
-    function createWater(x0, z0, x1, z1, y, depth) {
+    function createWater(x0, z0, x1, z1, y, depth, { ocean = false, landBounds = [0,0,0,0] } = {}) {
       const w = x1 - x0;
       const d = z1 - z0;
-      const geo = new THREE.PlaneGeometry(w, d, util.clamp(Math.round(w), 1, 32), util.clamp(Math.round(d), 1, 32));
+      const geo = new THREE.PlaneGeometry(w, d, ocean ? 112 : util.clamp(Math.round(w), 1, 32), ocean ? 128 : util.clamp(Math.round(d), 1, 32));
+      if (ocean) {
+        // Spend vertices beside the terrace and pier; the distant sea needs much less detail.
+        const position = geo.attributes.position;
+        for (let i=0;i<position.count;i++) {
+          const u = position.getX(i)/(w/2), v = position.getY(i)/(d/2);
+          position.setXY(i, Math.sign(u)*Math.pow(Math.abs(u),1.7)*w/2, Math.sign(v)*Math.pow(Math.abs(v),1.7)*d/2);
+        }
+      }
       // merge() returns fresh clones, so every pool owns its fog uniforms (the renderer writes into them).
       const uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
         uTime: { value: 0 },
@@ -615,17 +742,24 @@ import { CONST } from './util.js';
         uReflection: { value: null },
         uReflectionMatrix: { value: new THREE.Matrix4() },
         uReflect: { value: 0 },
+        uRain: { value: 0 },
       }]);
       // Assigned after the merge so the texture and colours stay shared instead of being cloned per pool.
       uniforms.uNormalMap = { value: textures.waterNormal };
       uniforms.uShallow = { value: SHALLOW_COLOR };
       uniforms.uDeep = { value: DEEP_COLOR };
+      uniforms.uRipples = { value: ripples };
+      uniforms.uRippleHeights = { value: rippleHeights };
+      uniforms.uRainSources = { value: Array.from({length:6},()=>new THREE.Vector2()) };
+      uniforms.uWaterLight = { value: waterLight };
+      if (ocean) uniforms.uLandBounds = { value: new THREE.Vector4(...landBounds) };
       const mat = new THREE.ShaderMaterial({
         uniforms,
+        defines: ocean ? { OCEAN: 1 } : {},
         vertexShader: WATER_VERT,
-        fragmentShader: WATER_FRAG,
-        transparent: true,
-        depthWrite: false,
+        fragmentShader: ocean ? OCEAN_FRAG : WATER_FRAG,
+        transparent: !ocean,
+        depthWrite: ocean,
         side: THREE.DoubleSide,
         fog: true,
       });
@@ -633,7 +767,7 @@ import { CONST } from './util.js';
       const mesh = new THREE.Mesh(geo, mat);
       mesh.rotation.x = -Math.PI / 2;
       mesh.position.set((x0 + x1) / 2, y, (z0 + z1) / 2);
-      mesh.renderOrder = 10;
+      mesh.renderOrder = ocean ? 0 : 10;
       mesh.name = 'water';
       waterMaterials.add(mat);
       return mesh;
@@ -1194,6 +1328,7 @@ import { CONST } from './util.js';
 
     const landmark = createLandmark({ group, textures, createWater, poolMaterial: materials.pool, ring });
     const journey = createJourney({ group, textures, createWater, poolMaterial: materials.pool });
+    const soundscape = createSoundscape({ pools: [...landmark.pools, ...journey.pools], rain: journey.rainSources, walls: [...landmark.walls, ...journey.walls], pier: journey.pier });
     const chunks = new Map();
     let chunkVersion = 0;            // bumped whenever the loaded set changes (invalidates wallsNear cache)
     const wallsCache = { key: null, version: -1, list: [] };
@@ -1233,6 +1368,13 @@ import { CONST } from './util.js';
     function setRing(r) {
       ring = Math.max(1, r | 0);
       landmark.setQuality(ring);
+      const seen = new Set();
+      group.traverse(object => {
+        if (!object.material) return;
+        for (const mat of Array.isArray(object.material) ? object.material : [object.material]) {
+          if (!seen.has(mat)) { seen.add(mat); setSurfaceQuality(mat, ring > 1); }
+        }
+      });
     }
 
     /** Cell index of world (x, z) inside its chunk, clamped against floating-point edge cases. */
@@ -1362,12 +1504,26 @@ import { CONST } from './util.js';
      * fixed light pool to the DRAIN_LIGHTS drains nearest the camera (origin until a camera is set).
      * Allocation-free: the nearest list is a small preallocated insertion sort.
      */
-    function setTime(t) {
+    function setTime(t, player) {
+      if (player) {
+        const { position, state } = player;
+        const waterY = waterAt(position.x, position.z);
+        if (state.inWater && Number.isFinite(waterY) &&
+            (!wasInWater || (state.speed > 0.3 && t >= nextRipple))) {
+          ripples[rippleIndex].set(position.x, position.z, t, wasInWater ? Math.min(0.9, 0.2 + state.speed * 0.08) : 1);
+          rippleHeights[rippleIndex] = waterY;
+          rippleIndex = (rippleIndex + 1) % ripples.length;
+          nextRipple = t + 0.42;
+        }
+        wasInWater = state.inWater;
+      }
+      // Follow the current room lighting without another rendering pass.
+      waterLight.copy(scene.fog.color).lerp(waterWhite, 0.65);
       const dt = lastTime === null ? 0 : util.clamp(t - lastTime, 0, 0.1);
       lastTime = t;
       causticTime.value = t;
-      journey.setTime(t);
-      if (landmark.root.visible) landmark.update(t, dt, camera);
+      journey.setTime(t, dt, camera, opts.onBallContact);
+      if (landmark.root.visible) landmark.update(t, dt, camera, opts.onBallContact);
       for (const mat of waterMaterials) {
         mat.uniforms.uTime.value = t;
         if (camera) mat.uniforms.uCameraPos.value.copy(camera.position);
@@ -1460,6 +1616,7 @@ import { CONST } from './util.js';
       update,
       ensureChunk,
       setRing,
+      soundscape,
       floorAt,
       ceilingAt,
       waterAt,
@@ -1467,8 +1624,10 @@ import { CONST } from './util.js';
       nearestDrain,
       drainAt,
       spawn,
-      stepRide: landmark.stepRide,
-      resetRide: landmark.resetRide,
+      stepRide(position, velocity, dt) {
+        return landmark.stepRide(position, velocity, dt) || journey.stepRide(position, velocity, dt);
+      },
+      resetRide() { landmark.resetRide(); journey.resetRide(); },
       setTime,
       setFog,
       setCamera,
@@ -1480,4 +1639,3 @@ import { CONST } from './util.js';
   }
 
   export { createWorld };
-

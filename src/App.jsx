@@ -3,6 +3,7 @@ import { startGame } from './game/engine.js';
 import { createUIStore } from './game/ui-store.js';
 import { StartMenu } from './components/StartMenu.jsx';
 import { PauseMenu } from './components/PauseMenu.jsx';
+import { ATMOSPHERES } from './game/atmosphere.js';
 
 export default function App() {
   const [ui] = useState(createUIStore);
@@ -23,9 +24,15 @@ export default function App() {
     }
   }, [state.menu, state.touch, state.ready]);
   return (
-  <div id="app">
+  <div id="app" data-reduced-motion={state.settings.reducedMotion}>
     <canvas id="c" aria-label="Poolrooms 3D view"></canvas>
     <div id="vignette" aria-hidden="true"></div>
+    <div id="water-lens" aria-hidden="true"></div>
+    <div id="arrival" key={state.arrival} className="arrival" role="status" hidden={!state.arrival || !!state.menu || state.resting || !!state.error}>
+      <span className="arrival-rule" aria-hidden="true" />
+      <p className="arrival-name">{state.arrival}</p>
+      <p className="arrival-caption">{ATMOSPHERES[state.arrival]?.caption}</p>
+    </div>
 
     
     <div id="hud" hidden={state.menu === "start" || !!state.error}>
@@ -42,8 +49,12 @@ export default function App() {
     </div>
 
     
-    <button id="btn-rest" className="rest-prompt" hidden={!state.canRest || state.resting || !!state.menu} onClick={() => ui.action("onRest")}>Rest <span> E </span></button>
-    <div id="ending" className="ending" hidden={!state.resting || !!state.menu}>
+    <button id="btn-rest" className="rest-prompt" hidden={!state.canRest || state.resting || !!state.menu} onClick={() => ui.action("onRest")}>{state.restPrompt}<span hidden={state.touch}> E </span></button>
+    <div id="quiet-rest" className="quiet-rest" hidden={!state.resting || state.restEnding || !!state.menu}>
+      <p>{state.restCaption}</p>
+      <button id="btn-leave-seat" className="btn" onClick={() => ui.action("onRest")}>Get up &amp; keep exploring</button>
+    </div>
+    <div id="ending" className="ending" hidden={!state.resting || !state.restEnding || !!state.menu}>
       <div className="ending-titles"><p className="menu-eyebrow">YOU FOUND THE SKY</p><h2>POOLROOMS</h2><p>There is nowhere else you need to be.</p><div className="ending-credits">A quiet journey through water and light<br />Thank you for exploring.</div></div>
       <button id="btn-get-up" className="btn" onClick={() => ui.action("onRest")}>Get up & keep exploring</button>
     </div>
