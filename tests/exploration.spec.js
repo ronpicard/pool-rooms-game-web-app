@@ -142,7 +142,10 @@ for(const mode of ['touch','desktop']) test(`seated ${mode} free look keeps the 
   await enter(page);
   if(mode==='desktop') { await page.locator('#btn-pause').click(); await page.locator('#sel-input').selectOption('desktop'); await page.locator('#btn-resume').click(); }
   await page.evaluate(()=>PR.game.player.teleport(114.5,0,20,-Math.PI/2));
-  await expect(page.locator('#btn-rest')).toBeVisible(); await page.locator('#btn-rest').click();
+  await expect(page.locator('#btn-rest')).toBeVisible();
+  // Pointer lock routes desktop clicks to the canvas; use the advertised keyboard action.
+  if(mode==='desktop') await page.keyboard.press('e');
+  else await page.locator('#btn-rest').click();
   await expect.poll(()=>page.evaluate(()=>PR.game.camera.position.x)).toBeCloseTo(112,2);
   const before=await page.evaluate(()=>({position:PR.game.player.position.toArray(),view:PR.game.camera.quaternion.toArray()}));
   await page.mouse.move(450,150); await page.mouse.down(); await page.mouse.move(550,200,{steps:8}); await page.mouse.up();
